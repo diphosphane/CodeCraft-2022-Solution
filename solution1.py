@@ -1,9 +1,32 @@
 from typing import List, Tuple, Set
 from subprocess import getoutput
+import math
 from read_data import *
+import numpy as np
 
-# global cname, sname, qos, qos_lim, time_label, client_demand, bandwidth
+cname, sname, qos, qos_lim = None, None, None, None
+time_label = None
+client_demand = None
+bandwidth = None
 LOCAL = getoutput('uname') == 'Darwin'
+
+def get_data():
+    global cname, sname, qos, qos_lim, bandwidth, client_demand, time_label
+    cname, sname, qos = read_qos()
+    qos = np.array(qos)
+    time_label, client_name, client_demand = read_demand()
+    client_idx_list = []
+    for c in cname:
+        idx = client_name.index(c)
+        client_idx_list.append(idx)
+    client_demand = np.array(client_demand)[:, client_idx_list]
+    server_name, server_bandwidth = read_server_bandwidth()
+    bandwidth = []
+    for s in sname:
+        idx = server_name.index(s)
+        bandwidth.append(server_bandwidth[idx])
+    qos_lim = read_qos_limit()
+    bandwidth = np.array(bandwidth)
 
 class Solution:
     def __init__(self) -> None:
@@ -59,3 +82,8 @@ class Solution:
             for c_idx, c_demand in enumerate(each):
                 self.dispatch_for_client(c_idx, c_demand)
             self.output()
+
+if __name__ == '__main__':
+    get_data()
+    s = Solution()
+    s.dispatch()
