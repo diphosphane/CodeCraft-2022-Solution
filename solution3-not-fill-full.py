@@ -89,7 +89,7 @@ class Solution():
     def assign(self, t_idx: int, s_idx: int, c_idx: int, demand: int) -> bool: # has value: assign successfully  False: fail, need second time assign
         add_up = self.record[t_idx, s_idx, c_idx] + demand
         upper_limit = bandwidth[s_idx]
-        if add_up > upper_limit: # assign fail
+        if add_up + 10 > upper_limit: # assign fail
             left = add_up - upper_limit
             assign_bandwidth = demand - left
             self.record[t_idx, s_idx, c_idx] += assign_bandwidth
@@ -106,7 +106,8 @@ class Solution():
             s_arr = np.array(s_list)[arg]
             for idx, s_idx in enumerate(s_arr):
                 if t_idx in self.server_5_t_idx[s_idx]: # in server top 5, put all the resources into
-                    if self.server_5_value[s_idx][t_idx] == bandwidth[s_idx]: # server is full at current time, next loop
+                    if bandwidth[s_idx] - self.server_5_value[s_idx][t_idx] > 10: # server is full at current time, next loop
+                    # if self.server_5_value[s_idx][t_idx] == bandwidth[s_idx]: # server is full at current time, next loop
                         continue
                     else: # server is not full, try to fill it to full
                         left = self.assign(t_idx, s_idx, c_idx, demand)

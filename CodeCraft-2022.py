@@ -1,3 +1,4 @@
+from pickletools import read_int4
 from typing import List, Tuple, Set
 from subprocess import getoutput
 import math
@@ -44,15 +45,46 @@ class Solution():
         self.higher_95_num = self.time_len - num_95
         self.server_5_t_idx = [ set() for _ in range(len(sname)) ]
         self.server_5_value = [ defaultdict(int) for _ in range(len(sname)) ]
-
     
     def qos_avail(self, c_idx: int) -> List[int]:
         c_qos = qos[:, c_idx]
         qos_avail = c_qos < qos_lim
-        return [ s_idx for s_idx, avail in enumerate(qos_avail) if avail ]
+        out = [ s_idx for s_idx, avail in enumerate(qos_avail) if avail ]
+        return out
 
     def __del__(self):
         self.f.close()
+    
+    def check_output_valid(self):
+        # check client is equal
+        demand_sum = self.record.sum(axis=1)
+        for t_idx, sum_at_each_time in enumerate(demand_sum):
+            c_demand_at_t = client_demand[t_idx]
+            if np.any(c_demand_at_t - sum_at_each_time):
+            # if c_demand_at_t != sum_at_each_time:
+                print(f'client demand is not equal at time {t_idx}')
+                print(f'calculated: {sum_at_each_time} \n required: {c_demand_at_t}')
+                exit(1)
+        if np.any(demand_sum - client_demand):
+        # if demand_sum != client_demand:
+            print('client demand is not equal')
+            exit(1)
+        # check qos
+        for t_idx, r_each_time in enumerate(self.record):
+            for s_idx, r_each_s in enumerate(r_each_time):
+                for c_idx, value in enumerate(r_each_s):
+                    if value:
+                        if qos[s_idx, c_idx] > qos_lim:
+                            print(f'qos not satisfied in time {t_idx}, server {sname[s_idx]}, client {cname[c_idx]}')
+                            exit(1)
+        # check server upper limit
+        bw_sum = self.record.sum(axis=-1)
+        for t_idx, sum_at_t in enumerate(bw_sum):
+            if np.any(sum_at_t > bandwidth):
+                print('exceed bandwidth upper')
+                print(f'sum: \t{sum_at_t} \n bandwidth: \t{bandwidth}')
+                exit(1)
+        print('test passed')
 
     def output(self):
         for each_time_step_operation in self.record:
@@ -64,16 +96,6 @@ class Solution():
                         out_list.append(f'<{sname[s_idx]},{res}>')
                 tmp += ','.join(out_list)
                 self.f.write(tmp + '\n')
-
-        # for c_idx, r in enumerate(self.record):
-        #     tmp = cname[c_idx] + ':'
-        #     if r:
-        #         out_list = []
-        #         for s_idx, res in r:
-        #             out_list.append(f'<{sname[s_idx]},{res}>')
-        #         tmp += ','.join(out_list)
-        #     self.f.write(tmp + '\n')
-        # self.reset()
     
     @staticmethod
     def get_max_idx(array: np.ndarray) -> Tuple[int, int]:
@@ -152,3 +174,4 @@ if __name__ == '__main__':
     s = Solution()
     s.dispatch()
     s.output()
+    if LOCAL: s.check_output_valid()
