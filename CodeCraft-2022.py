@@ -4,9 +4,6 @@ import math
 import time
 from collections import defaultdict
 from functools import reduce
-from matplotlib.cbook import maxdict
-
-from more_itertools import side_effect
 from read_data import *
 import numpy as np
 
@@ -271,9 +268,11 @@ class Solution():
 
         # move to prev 95%
         (t_idx_list, s_idx_list, res_at_95_list), barrier_list = self.get_batch_max_95(server_t_series) # barrier is for each server
-        added_obj = set()
-        for t_idx, s_idx in zip(t_idx_list, s_idx_list):
-            added_obj.add((t_idx, s_idx))
+        # added_obj = set()
+        added_obj = {}
+        # for t_idx, s_idx in zip(t_idx_list, s_idx_list):
+        #     # added_obj.add((t_idx, s_idx))
+        #     added_obj[(t_idx, s_idx)] = 0
         for t_idx, s_idx_orig, res_at_95 in zip(t_idx_list, s_idx_list, res_at_95_list):
             client_series = self.record[t_idx, s_idx_orig]
             for c_idx, res in enumerate(client_series):
@@ -282,15 +281,16 @@ class Solution():
                     s_idx_cand_list = self.qos_avail_for_c(c_idx)  # server candidate
                     for s_idx_new in s_idx_cand_list:
                         if (t_idx, s_idx_new) in added_obj:
-                            continue  # can change set to defaultdict
+                            dispatch_minus = added_obj[(t_idx, s_idx_new)]
+                        else:
+                            dispatch_minus = 0
                         if s_idx_new == s_idx_orig: continue
                         can_dispatch = self.dispatch_to_small(barrier_list, t_idx, s_idx_new)
-                        if can_dispatch:
-                            self.assign(t_idx, s_idx_new, c_idx, can_dispatch)
-                            self.record[t_idx, s_idx_orig, c_idx] -= can_dispatch
-                            added_obj.add((t_idx, s_idx_new))
-        
-
+                        if can_dispatch > dispatch_minus:
+                            assign_bw = can_dispatch - dispatch_minus
+                            self.assign(t_idx, s_idx_new, c_idx, assign_bw)
+                            self.record[t_idx, s_idx_orig, c_idx] -= assign_bw
+                            added_obj[(t_idx, s_idx_new)] = can_dispatch
 
 
 
@@ -345,7 +345,7 @@ if __name__ == '__main__':
     if LOCAL: s.check_output_valid()
     # second time dispatch
     if LOCAL: time_threshould = 30
-    else: time_threshould = 250
+    else: time_threshould = 280
     while time.time() - start_time < time_threshould:
         s.dispatch_again()
     s.output()
