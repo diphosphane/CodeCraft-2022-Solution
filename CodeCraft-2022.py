@@ -1,4 +1,3 @@
-from pickletools import read_int4
 from typing import List, Tuple, Set
 from subprocess import getoutput
 import math
@@ -52,8 +51,8 @@ class Solution():
         out = [ s_idx for s_idx, avail in enumerate(qos_avail) if avail ]
         return out
 
-    def __del__(self):
-        self.f.close()
+    # def __del__(self):
+    #     self.f.close()
     
     def check_output_valid(self):
         # check client is equal
@@ -63,7 +62,7 @@ class Solution():
             if np.any(c_demand_at_t - sum_at_each_time):
             # if c_demand_at_t != sum_at_each_time:
                 print(f'client demand is not equal at time {t_idx}')
-                print(f'calculated: {sum_at_each_time} \n required: {c_demand_at_t}')
+                print(f'calculated: \n{sum_at_each_time} \n\n required: \n{c_demand_at_t}')
                 exit(1)
         if np.any(demand_sum - client_demand):
         # if demand_sum != client_demand:
@@ -81,10 +80,11 @@ class Solution():
         bw_sum = self.record.sum(axis=-1)
         for t_idx, sum_at_t in enumerate(bw_sum):
             if np.any(sum_at_t > bandwidth):
-                print('exceed bandwidth upper')
-                print(f'sum: \t{sum_at_t} \n bandwidth: \t{bandwidth}')
+                print(f'exceed bandwidth upper at time {t_idx} {time_label[t_idx]}')
+                # print(f'solution sum: \n{sum_at_t} \n\n bandwidth limit: \n{bandwidth}')
+                print(f'different (bandwidth_limit - solution_sum): \n{bandwidth - sum_at_t}')
                 exit(1)
-        print('test passed')
+        print('test passed \n\n\n')
 
     def output(self):
         for each_time_step_operation in self.record:
@@ -96,6 +96,14 @@ class Solution():
                         out_list.append(f'<{sname[s_idx]},{res}>')
                 tmp += ','.join(out_list)
                 self.f.write(tmp + '\n')
+        self.f.close()
+        # calc score 
+        if LOCAL:
+            bd_each_time = self.record.sum(axis=-1)
+            bd_each_time.sort(axis=0)
+            score_95 = bd_each_time[self.idx_95, :]
+            final_score = score_95.sum()
+            print(f'95% score sum: {final_score}\n{score_95}\n')
     
     @staticmethod
     def get_max_idx(array: np.ndarray) -> Tuple[int, int]:
@@ -108,7 +116,7 @@ class Solution():
             cnt += 1
     
     def assign(self, t_idx: int, s_idx: int, c_idx: int, demand: int) -> bool: # has value: assign successfully  False: fail, need second time assign
-        add_up = self.record[t_idx, s_idx, c_idx] + demand
+        add_up = self.record[t_idx, s_idx].sum() + demand
         upper_limit = bandwidth[s_idx]
         if add_up > upper_limit: # assign fail
             left = add_up - upper_limit
@@ -126,6 +134,8 @@ class Solution():
             arg = np.argsort(np.array(occu_5_num))
             s_arr = np.array(s_list)[arg]
             for idx, s_idx in enumerate(s_arr):
+                if s_idx == 90 and t_idx == 72:
+                    a = 1
                 if t_idx in self.server_5_t_idx[s_idx]: # in server top 5, put all the resources into
                     if self.server_5_value[s_idx][t_idx] == bandwidth[s_idx]: # server is full at current time, next loop
                         continue
@@ -141,6 +151,8 @@ class Solution():
                             demand = 0
                             break
                 elif len(self.server_5_t_idx[s_idx]) != self.higher_95_num: # not in server top 5, top 5 is not full, fill a blank
+                    if self.server_5_value[s_idx][t_idx] == bandwidth[s_idx]: # server is full at current time, next loop
+                        continue
                     self.server_5_t_idx[s_idx].add(t_idx)
                     left = self.assign(t_idx, s_idx, c_idx, demand)
                     if left:
