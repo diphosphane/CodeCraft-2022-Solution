@@ -85,7 +85,10 @@ class Solution():
                 for c_idx, value in enumerate(r_each_s):
                     if value:
                         if qos[s_idx, c_idx] > qos_lim:
-                            print(f'qos not satisfied in time {t_idx}, server {sname[s_idx]}, client {cname[c_idx]}')
+                            print(f'qos not satisfied in time {t_idx}, server {sname[s_idx]} (index: {s_idx}), client {cname[c_idx]} (index: {c_idx})')
+                            exit(1)
+                        if value < 0:
+                            print(f'dispatch bandwidth < 0 in time {t_idx}, server {sname[s_idx]} (index: {s_idx}), client {cname[c_idx]} (index: {c_idx})')
                             exit(1)
         # check server upper limit
         bw_sum = self.record.sum(axis=-1)
@@ -280,6 +283,7 @@ class Solution():
                     demand = np.ceil(self.record[t_idx, s_idx_orig, c_idx] * 0.3).astype('int32')
                     s_idx_cand_list = self.qos_avail_for_c(c_idx)  # server candidate
                     for s_idx_new in s_idx_cand_list:
+                        if demand <= 0: break
                         if (t_idx, s_idx_new) in added_obj:
                             dispatch_minus = added_obj[(t_idx, s_idx_new)]
                         else:
@@ -287,7 +291,8 @@ class Solution():
                         if s_idx_new == s_idx_orig: continue
                         can_dispatch = self.dispatch_to_small(barrier_list, t_idx, s_idx_new)
                         if can_dispatch > dispatch_minus:
-                            assign_bw = can_dispatch - dispatch_minus
+                            assign_bw = min(demand, can_dispatch - dispatch_minus) 
+                            demand -= assign_bw
                             self.assign(t_idx, s_idx_new, c_idx, assign_bw)
                             self.record[t_idx, s_idx_orig, c_idx] -= assign_bw
                             added_obj[(t_idx, s_idx_new)] = can_dispatch
