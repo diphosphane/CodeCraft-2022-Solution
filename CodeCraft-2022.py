@@ -4,6 +4,7 @@ import math
 import time
 from collections import defaultdict
 from functools import reduce
+from xml.etree.ElementPath import prepare_self
 from read_data import *
 import numpy as np
 
@@ -97,7 +98,7 @@ class Solution():
                 print(f'exceed bandwidth upper at time {t_idx} {time_label[t_idx]}')
                 print(f'different (bandwidth_limit - solution_sum): \n{bandwidth - sum_at_t}')
                 exit(1)
-        print('test passed \n\n\n')
+        print('test passed \n\n')
 
     def output(self):
         for each_time_step_operation in self.record:
@@ -110,14 +111,19 @@ class Solution():
                 tmp += ','.join(out_list)
                 self.f.write(tmp + '\n')
         self.f.close()
-        if LOCAL: self.info_print()
+        if LOCAL: self.calc_score95()
     
-    def info_print(self):
+    def calc_score95(self, print_sep=True):
         bd_each_time = self.record.sum(axis=-1)
         bd_each_time.sort(axis=0)
         score_95 = bd_each_time[self.idx_95, :]
         final_score = score_95.sum()
-        print(f'95% score sum: {final_score}\n{score_95}\n')
+        if print_sep:
+            print(f'95% score sum: {final_score}\n{score_95}\n')
+        else:
+            print(f'95% score sum: {final_score}')
+        return final_score
+
     
     @staticmethod
     def get_max_idx(array: np.ndarray) -> Tuple[int, int]:
@@ -346,12 +352,15 @@ if __name__ == '__main__':
     s = Solution()
     s.dispatch()
     # s.output()
-    s.info_print()
+    prev_score = s.calc_score95(print_sep=False)
     if LOCAL: s.check_output_valid()
     # second time dispatch
     if LOCAL: time_threshould = 30
     else: time_threshould = 280
     while time.time() - start_time < time_threshould:
         s.dispatch_again()
+        curr_score = s.calc_score95(print_sep=False)
+        if (prev_score - curr_score) / curr_score < 0.00003: break
+        prev_score = curr_score
     s.output()
     if LOCAL: s.check_output_valid()
