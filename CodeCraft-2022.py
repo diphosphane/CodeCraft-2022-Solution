@@ -1,17 +1,14 @@
 from collections import defaultdict
-from queue import PriorityQueue
-from tkinter.tix import TixWidget
 from typing import List, Tuple, Set
 from subprocess import getoutput
 import math
 import time
 from functools import reduce
-
-from more_itertools import side_effect
 from read_data import *
 import numpy as np
 
 cname, sname, qos, qos_lim = None, None, None, None
+t_len, s_len, c_len = 0, 0, 0
 time_label = None
 client_demand = None
 bandwidth = None
@@ -20,6 +17,7 @@ LOCAL = getoutput('uname') == 'Darwin'
 
 def get_data():
     global cname, sname, qos, qos_lim, bandwidth, client_demand, time_label
+    global t_len, s_len, c_len
     cname, sname, qos = read_qos()
     qos = np.array(qos)
     time_label, client_name, client_demand = read_demand()
@@ -35,34 +33,29 @@ def get_data():
         bandwidth.append(server_bandwidth[idx])
     qos_lim = read_qos_limit()
     bandwidth = np.array(bandwidth)
+    t_len, s_len, c_len = len(time_label), len(sname), len(cname)
 
 class Solution():
     def __init__(self) -> None:
-        self.init_constant()
         self.init_95()
         self.init_qos()
-        self.record = np.zeros((self.t_len, self.s_len, self.c_len), dtype=np.int32)
-        self.t_s_record = np.zeros((self.t_len, self.s_len))
-    
-    def init_constant(self):
-        self.t_len = len(time_label)
-        self.s_len = len(sname)
-        self.c_len = len(cname)
+        self.record = np.zeros((t_len, s_len, c_len), dtype=np.int32)
+        self.t_s_record = np.zeros((t_len, s_len))
     
     def init_qos(self):
         self.qos_avail_for_c = []
-        for c_idx in range(self.c_len):
+        for c_idx in range(c_len):
             self.qos_avail_for_c.append(self._qos_avail_for_c(c_idx))
         self.qos_avail_for_s = []
-        for s_idx in range(self.s_len):
+        for s_idx in range(s_len):
             self.qos_avail_for_s.append(self._qos_avail_for_s(s_idx))
     
     def init_95(self):
-        num_95 = math.ceil(self.t_len * 0.95)
+        num_95 = math.ceil(t_len * 0.95)
         self.idx_95 = num_95 - 1
-        self.higher_95_num = self.t_len - num_95
-        self.server_5_t_idx = [ set() for _ in range(self.s_len) ]
-        self.server_5_value = [ defaultdict(int) for _ in range(self.s_len) ]
+        self.higher_95_num = t_len - num_95
+        self.server_5_t_idx = [ set() for _ in range(s_len) ]
+        self.server_5_value = [ defaultdict(int) for _ in range(s_len) ]
     
     def _qos_avail_for_c(self, c_idx: int) -> List[int]:
         c_qos = qos[:, c_idx]
@@ -132,7 +125,7 @@ class Solution():
         score_95 = bd_each_time[self.idx_95, :]
         final_score = score_95.sum()
         if print_sep:
-            print(f'95% score sum: {final_score}\n{score_95}\n')
+            print(f'95% score sum: {final_score}\n{sorted(score_95, reverse=True)}\n')
         else:
             print(f'95% score sum: {final_score}')
         return final_score
@@ -173,7 +166,7 @@ class Solution():
         if input_record is not None:
             record = input_record
         else: record = self.record
-        pos_96 = np.ceil(self.t_len * 0.95 ).astype('int32')
+        pos_96 = np.ceil(t_len * 0.95 ).astype('int32')
         res_t_for_server = record.sum(axis=-1).T # s_idx, t_idx
         t_idx_arr_for_server = []
         for t_series in res_t_for_server:
@@ -334,7 +327,7 @@ class Solution():
             t_idx = np.argpartition(time_series, -next_to_max_idx)[-next_to_max_idx]
             t_idx_94_list.append(t_idx)
             value_at_94_list.append(time_series[t_idx])
-        barrier_list = [ 0 for _ in range(self.s_len) ]
+        barrier_list = [ 0 for _ in range(s_len) ]
         out_t_idx_list = []
         out_s_idx_list = []
         out_res_at_95 = []
@@ -342,7 +335,7 @@ class Solution():
         idx_for_95 = np.argsort(np.array(value_at_95_list))[::-1]  # index for 95 value (sorting)
         ini_val = value_95[idx_for_95[0]]
         value_94 = np.array(value_at_94_list)
-        for i in range(self.s_len):
+        for i in range(s_len):
             s_idx = idx_for_95[i]
             curr_val = value_95[s_idx]
             if curr_val == 0: break
@@ -354,30 +347,40 @@ class Solution():
             out_t_idx_list.append(t_idx)
             out_s_idx_list.append(s_idx)
             out_res_at_95.append(curr_val)
-        for j in range(i, self.s_len):
+        for j in range(i, s_len):
             s_idx = idx_for_95[i]
             barrier_list[s_idx] = value_95[s_idx]
         return (out_t_idx_list, out_s_idx_list, out_res_at_95), barrier_list
     
     def dispatch_to_small(self, barrier_list: List[int], t_idx: int, s_idx: int):
         barrier = barrier_list[s_idx]
-        sum_at_here = self.record[t_idx, s_idx].sum()
+        sum_at_here = self.record[t_idx, s_idx].sum()  # TODO: can optimize
         return max(barrier - sum_at_here - 1, 0)
     
     def analyse_larger_than_95(self):
-        occu_res = self.record.sum(axis=-1)  # t, s
-        not_full_rec = {}
-        for t_idx, s_occupied in enumerate(occu_res):
-            for s_idx, value in enumerate(s_occupied):
-                if value:
-                    upper_limit = bandwidth[s_idx]
-                    if upper_limit > value:
-                        c_list = self.qos_avail_for_c[s_idx]
-                        for c_idx in c_list:
-                            not_full_rec[(t_idx, c_idx)] = (s_idx, upper_limit - value)
+        self.not_full_rec = {}  # (t_idx, c_idx) -> (s_idx, can_fill_bw)
+        for s_idx in range(s_len):
+            upper_limit = bandwidth[s_idx]
+            for t_idx in self.server_5_t_idx[s_idx]:
+                c_series = self.record[t_idx, s_idx]
+                sum_client = c_series.sum()
+                c_idx_arr = np.arange(c_len)[c_series > 0]
+                for c_idx in c_idx_arr:
+                    can_fill_bw = upper_limit - sum_client
+                    self.not_full_rec[(t_idx, c_idx)] = (s_idx, can_fill_bw)
+    
+    def try_fill_larger_than_95(self, t_idx: int, from_s_idx: int, c_idx: int, provide: int) -> Tuple[int, int]:  # left, filled
+        to_s_idx, can_be_fill = self.not_full_rec.get((t_idx, c_idx), (None, 0))
+        if can_be_fill:
+            vary_value = min(provide, can_be_fill)
+            self.record[t_idx, to_s_idx, c_idx] += vary_value
+            self.record[t_idx, from_s_idx, c_idx] -= vary_value
+            # TODO: to update self.server_5_value
+            return provide - vary_value
+        return provide
     
     def index_of(self, perc: float) -> int:
-        return math.ceil(self.t_len * perc) - 1
+        return math.ceil(t_len * perc) - 1
 
     def _get_95_and_barrier_for_s(self, barrier_perc: float): 
         arr = self.record.sum(axis=-1).T  # arr: s_idx, t_idx
@@ -385,11 +388,39 @@ class Solution():
         idx = np.argpartition(arr, (idx_barrier, self.idx_95))  # s_idx, t_idx
         out_idx = idx[:, idx_barrier: self.idx_95 + 1]  # idx for t
         idx = idx[:, [idx_barrier, self.idx_95]]
-        idx_1 = np.tile(np.arange(self.s_len).reshape(-1, 1), 2)
+        idx_1 = np.tile(np.arange(s_len).reshape(-1, 1), 2)
         values_barrier, values_95 = arr[idx_1, idx].T
         return out_idx, values_barrier, values_95
     
-    def dispatch_again_batch(self, barrier_perc=0.8):
+    def dispatch_again_batch_for_one_server(self, barrier_perc=0.8):
+        can_cut_t_idxs, values_barrier, values_95 = self._get_95_and_barrier_for_s(barrier_perc)
+        prior_idx = np.argsort(values_barrier - values_95)  # s_idx
+        barrier_in_progress = values_95.copy()
+        added_2_prev95_obj = {}
+        for s_idx_orig in prior_idx:
+            barrier = values_barrier[s_idx_orig]
+            barrier_in_progress[s_idx_orig] = barrier
+            res_at_95 = values_95[s_idx_orig]
+            can_move_threshould = res_at_95 - barrier
+            can_move_perc = can_move_threshould / res_at_95
+            for t_idx in can_cut_t_idxs[s_idx_orig]:
+                for c_idx, res in enumerate(self.record[t_idx, s_idx_orig]):
+                    if res > can_move_threshould: # ratio of client in this server > 3%
+                        demand = math.ceil(self.record[t_idx, s_idx_orig, c_idx] * can_move_perc)
+                        for s_idx_new in self.qos_avail_for_c[c_idx]:
+                            if demand <= 0: break
+                            if s_idx_new == s_idx_orig: continue
+                            # demand = self.try_fill_larger_than_95(t_idx, s_idx_orig, c_idx, demand)
+                            dispatch_minus = added_2_prev95_obj.get((t_idx, s_idx_new), 0)
+                            can_dispatch = self.dispatch_to_small(barrier_in_progress, t_idx, s_idx_new)
+                            if can_dispatch > dispatch_minus:
+                                assign_bw = min(demand, can_dispatch - dispatch_minus) 
+                                demand -= assign_bw
+                                self.assign(t_idx, s_idx_new, c_idx, assign_bw)
+                                self.record[t_idx, s_idx_orig, c_idx] -= assign_bw
+                                added_2_prev95_obj[(t_idx, s_idx_new)] = can_dispatch
+    
+    def dispatch_again_batch_for_multi_server(self, barrier_perc=0.8):
         can_cut_t_idxs, values_barrier, values_95 = self._get_95_and_barrier_for_s(barrier_perc)
         prior_idx = np.argsort(values_barrier - values_95)  # s_idx
         added_2_prev95_obj = {}
@@ -403,6 +434,7 @@ class Solution():
                         for s_idx_new in self.qos_avail_for_c[c_idx]:
                             if demand <= 0: break
                             if s_idx_new == s_idx_orig: continue
+                            # demand = self.try_fill_larger_than_95(t_idx, s_idx_orig, c_idx, demand)
                             dispatch_minus = added_2_prev95_obj.get((t_idx, s_idx_new), 0)
                             can_dispatch = self.dispatch_to_small(values_barrier, t_idx, s_idx_new)
                             if can_dispatch > dispatch_minus:
@@ -417,7 +449,7 @@ class Solution():
     def dispatch_again(self):
         server_t_series = self.record.sum(axis=-1)
         (t_idx_list, s_idx_list, res_at_95_list), barrier_list = self.get_batch_prev_95(server_t_series) # barrier is for each server
-        higher_95_t_idx_for_server = self.get_batch_after_95(server_t_series)
+        # higher_95_t_idx_for_server = self.get_batch_after_95(server_t_series)
         added_2_prev95_obj = {}
         for t_idx, s_idx_orig, res_at_95 in zip(t_idx_list, s_idx_list, res_at_95_list):
             client_series = self.record[t_idx, s_idx_orig]
@@ -427,6 +459,8 @@ class Solution():
                     demand = np.ceil(self.record[t_idx, s_idx_orig, c_idx] * 0.4).astype('int32')
                     s_idx_cand_list = self.qos_avail_for_c[c_idx]  # server candidate
                     # # move to max 5%
+                    demand = self.try_fill_larger_than_95(t_idx, s_idx_orig, c_idx, demand)
+
                     # for s_idx_new in s_idx_cand_list:
                     #     if demand <= 0: break
                     #     higher_95_t_list = higher_95_t_idx_for_server[s_idx_new]
@@ -480,6 +514,7 @@ if __name__ == '__main__':
     get_data()
     s = Solution()
     s.dispatch_2_one_server()
+    s.analyse_larger_than_95()
     if LOCAL: 
         s.check_output_valid()
         s.calc_score95(True)
@@ -498,32 +533,27 @@ if __name__ == '__main__':
     else: 
         time_threshould = 290
 
-
-    prev_score = s.calc_score95(print_sep=False)
-    while time.time() - start_time < time_threshould:
-        s.dispatch_again()
-        curr_score = s.calc_score95(print_sep=False)
-        if (prev_score - curr_score) / curr_score < 0.000003: 
-            break
-        prev_score = curr_score
-
-    print('batch cut:')
-    s.dispatch_again_batch(0.94)
+    s.dispatch_again_batch_for_one_server(0.8)
     s.calc_score95(True)
-    print('batch cut finished')
+    # for i in np.arange(0.93, 0.30, -0.1):
+    #     s.dispatch_again_batch_for_one_server(i)
+    #     s.calc_score95(True)
+    
+    # print('after batch cut')
 
-    prev_score = s.calc_score95(print_sep=False)
-    while time.time() - start_time < time_threshould:
-        s.dispatch_again()
-        curr_score = s.calc_score95(print_sep=False)
-        if (prev_score - curr_score) / curr_score < 0.000003: 
-            break
-        prev_score = curr_score
+    # prev_score = s.calc_score95(print_sep=False)
+    # while time.time() - start_time < time_threshould:
+    #     s.dispatch_again()
+    #     curr_score = s.calc_score95(print_sep=True)
+    #     if (prev_score - curr_score) / curr_score < 0.000003: 
+    #         break
+    #     prev_score = curr_score
 
-    print('batch cut:')
-    s.dispatch_again_batch(0.93)
-    s.calc_score95(True)
-    print('batch cut finished')
+    # print('batch cut:')
+    # s.dispatch_again_batch_for_multi_server(0.94)
+    # if LOCAL: s.calc_score95(True)
+    # print('batch cut finished')
+
 
 
     # task = 'cut'
