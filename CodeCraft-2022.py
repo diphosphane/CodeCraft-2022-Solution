@@ -319,16 +319,16 @@ class Solution():
         s_full_filled = np.zeros(s_len, dtype=np.int32)
         after_95_t_includ_s = defaultdict(set)
         demand = client_demand.copy()
-        qos_bool_c_s = qos < qos_lim
+        qos_bool_c_s = (qos < qos_lim).T
         qos_mask = np.zeros((t_len, s_len), dtype=np.int32)
-        arr_t_s_orig = demand @ qos_bool_c_s.T  # t * c  dot  c * s  -->  t * s
+        arr_t_s_orig = demand @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
         cnt = 0
         while cnt < self.higher_95_num * self.avail_s_count:
-            t_idx, s_idx = self.max_idx_of(arr_t_s_orig)
-            # t_idx, s_idx = self.max_idx_of(np.ma.array(arr_t_s_orig, mask=qos_mask))
+            # t_idx, s_idx = self.max_idx_of(arr_t_s_orig)
+            t_idx, s_idx = self.max_idx_of(np.ma.array(arr_t_s_orig, mask=qos_mask))
             if s_full_filled[s_idx] == self.higher_95_num: 
-                # qos_mask[:, s_idx] = 1
-                arr_t_s_orig[:, s_idx] = 0
+                qos_mask[:, s_idx] = 1
+                # arr_t_s_orig[:, s_idx] = 0
                 continue
             if arr_t_s_orig[t_idx, s_idx] == 0: break
             c_avail_set = self.qos_avail_for_s[s_idx]
@@ -342,12 +342,14 @@ class Solution():
                 demand[t_idx, c_idx] -= assigned
                 added += assigned
             # update arr_t_s
-            arr_t_s_orig[t_idx] = demand[t_idx].reshape(1, -1) @ qos_bool_c_s.T
+            demand4t = demand[t_idx]
+            if any(demand4t):
+                arr_t_s_orig[t_idx] = demand4t.reshape(1, -1) @ qos_bool_c_s
+            else:
+                arr_t_s_orig[t_idx] = 0
             s_full_filled[s_idx] += 1
             cnt += 1
         for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(demand):
-            if t_idx == 5 and c_idx == 5:
-                a = 1
             s_avail_set = self.qos_avail_for_c[c_idx]
             s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
             avg = need_dispatch // len(s_avail_set)
