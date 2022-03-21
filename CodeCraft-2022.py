@@ -33,6 +33,8 @@ class Solution():
         self.record = np.zeros((t_len, s_len, c_len), dtype=np.int32)
         self.t_s_record = np.zeros((t_len, s_len), dtype=np.int32)
         self.t_s_include_c = [ [ set() for _ in range(s_len) ] for _ in range(t_len) ]
+        self.gen_time = 0
+        self.assign_time = 0
     
     def init_qos(self):
         def _qos4c(c_idx: int) -> List[int]:
@@ -119,19 +121,24 @@ class Solution():
         bw_each_time = self.t_s_record.copy()
         bw_each_time.sort(axis=0)
         score_95 = bw_each_time[self.idx_95, :]
+        after_95 = bw_each_time[self.idx_95+1:, :].sum(0)
+        after_95_sum = after_95.sum()
         final_score = score_95.sum()
         if print_sep:
             print(f'95% score sum: {final_score}\n{sorted(score_95, reverse=True)}\n')
+            print(f'after 95 sum: {after_95_sum}\n{sorted(after_95, reverse=True)}')
         else:
             print(f'95% score sum: {final_score}')
+            print(f'after 95 sum: {after_95_sum}')
         return final_score
     
-    @staticmethod
-    def get_max_idx_gen(array: np.ndarray) -> Tuple[int, int]:
+    def get_max_idx_gen(self, array: np.ndarray) -> Tuple[int, int]:
         arr = array.copy()
         cnt = 0; whole_num = reduce(lambda x,y: x*y, arr.shape)
         while cnt < whole_num:
+            st = time.time()
             idx = np.unravel_index(np.argmax(arr), arr.shape)
+            self.gen_time += (time.time() - st)
             yield idx, arr[idx]
             arr[idx] = 0
             cnt += 1
@@ -148,10 +155,14 @@ class Solution():
             assign_bandwidth = demand - left
             if assign_bandwidth != 0: self.t_s_include_c[t_idx][s_idx].add(c_idx)
             self.record[t_idx, s_idx, c_idx] += assign_bandwidth
+            st = time.time()
             self.t_s_record[t_idx, s_idx] += assign_bandwidth
+            self.assign_time += (time.time() - st)
             return left, assign_bandwidth
         self.record[t_idx, s_idx, c_idx] += demand
+        st = time.time()
         self.t_s_record[t_idx, s_idx] += demand
+        self.assign_time += (time.time() - st)
         if demand != 0: self.t_s_include_c[t_idx][s_idx].add(c_idx)
         return 0, demand
     
@@ -368,7 +379,6 @@ class Solution():
             for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
                 if added == bandwidth[s_idx]: break
                 left, assigned = self.assign(t_idx, s_idx, c_idx, demand[t_idx, c_idx])
-                self.t_s_include_c[t_idx][s_idx].add(c_idx)
                 demand[t_idx, c_idx] -= assigned
                 added += assigned
             # update arr_t_s
@@ -391,23 +401,37 @@ class Solution():
                     remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
             if remain: 
                 raise BaseException('not fully dispatched')
+    
+    def _restore_idx(self, idx, arr):
+        prev_sum = 0; new_idx = idx
+        new_sum = arr[:idx+1].sum()
+        while prev_sum != new_sum:
+            prev_sum = new_sum
+            new_idx = idx + new_sum
+            new_sum = arr[:new_idx+1].sum()
+        return new_idx
 
     def dispatch_from_server(self):
         s_full_filled = np.zeros(s_len, dtype=np.int32)
         after_95_t_includ_s = defaultdict(set)
         demand = client_demand.copy()
-        qos_bool_c_s = (qos < qos_lim).T
-        qos_mask = np.zeros((t_len, s_len), dtype=np.int32)
-        arr_t_s_orig = demand @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
+        qos_bool_c_s_orig = np.array((qos < qos_lim).T, order='F')
+        qos_bool_c_s = qos_bool_c_s_orig
+        s_idx_resotre_arr = np.zeros(s_len, dtype=np.int32)
+        s_idx_deleted = []
+        arr_t_s = demand @ qos_bool_c_s_orig  # t * c  dot  c * s  -->  t * s
         cnt = 0
+        st = time.time()
         while cnt < self.higher_95_num * self.avail_s_count:
-            # t_idx, s_idx = self.max_idx_of(arr_t_s_orig)
-            t_idx, s_idx = self.max_idx_of(np.ma.array(arr_t_s_orig, mask=qos_mask))
+            t_idx, s_idx = self.max_idx_of(arr_t_s)
+            if arr_t_s[t_idx, s_idx] == 0: break
+            s_idx = self._restore_idx(s_idx, s_idx_resotre_arr)
             if s_full_filled[s_idx] == self.higher_95_num: 
-                qos_mask[:, s_idx] = 1
-                # arr_t_s_orig[:, s_idx] = 0
+                s_idx_resotre_arr[s_idx] = 1
+                s_idx_deleted.append(s_idx)
+                qos_bool_c_s = np.delete(qos_bool_c_s_orig, s_idx_deleted, axis=1)
+                arr_t_s = demand @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
                 continue
-            if arr_t_s_orig[t_idx, s_idx] == 0: break
             c_avail_set = self.qos_avail_for_s[s_idx]
             if not c_avail_set: continue
             after_95_t_includ_s[t_idx].add(s_idx)
@@ -415,20 +439,13 @@ class Solution():
             for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
                 if added == bandwidth[s_idx]: break
                 left, assigned = self.assign(t_idx, s_idx, c_idx, demand[t_idx, c_idx])
-                self.t_s_include_c[t_idx][s_idx].add(c_idx)
                 demand[t_idx, c_idx] -= assigned
                 added += assigned
-            # update arr_t_s
-            # st_time = time.time()
-            arr_t_s_orig[t_idx] = demand[t_idx].dot(qos_bool_c_s)
-            # demand4t = demand[t_idx]
-            # if any(demand4t):
-            #     arr_t_s_orig[t_idx] = demand4t @ qos_bool_c_s
-            # else:
-            #     arr_t_s_orig[t_idx] = 0
-            # print(f'multiply time: {(time.time() - st_time)}')
+            arr_t_s[t_idx] = demand[t_idx].dot(qos_bool_c_s)
             s_full_filled[s_idx] += 1
             cnt += 1
+        print(f'matrix used time: {time.time() - st}')
+        st = time.time()
         for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(demand):
             s_avail_set = self.qos_avail_for_c[c_idx]
             s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
@@ -441,6 +458,7 @@ class Solution():
                     remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
             if remain: 
                 raise BaseException('not fully dispatched')
+        print(f'remain used time: {time.time() - st}')
 
     def dispatch_from_server_lazy_matrix(self):
         s_full_filled = np.zeros(s_len, dtype=np.int32)
@@ -474,7 +492,6 @@ class Solution():
             for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
                 if added == bandwidth[s_idx]: break
                 left, assigned = self.assign(t_idx, s_idx, c_idx, demand[t_idx, c_idx])
-                self.t_s_include_c[t_idx][s_idx].add(c_idx)
                 demand[t_idx, c_idx] -= assigned
                 added += assigned
             not_calc_t.add(t_idx)
@@ -507,7 +524,9 @@ if __name__ == '__main__':
     if LOCAL: 
         print(f'used time normal: {(time.time()-start_time):.2f}')
         s.calc_score95(False)
-
+    print(f'gen time: {s.gen_time}')
+    print(f'assign time: {s.assign_time}')
+    
     # s = Solution()
     # start_time = time.time()
     # s.dispatch_from_server_lazy_matrix()
@@ -521,25 +540,37 @@ if __name__ == '__main__':
     # s.calc_score95(True)
 
     # s.analyse_larger_than_95()
+
     if LOCAL: 
         s.check_output_valid()
         s.calc_score95(True)
         time_threshould = 10
     else: 
-        time_threshould = 290
+        time_threshould = 287
 
     prev_score = s.calc_score95(print_sep=False)
     while time.time() - start_time < time_threshould:
         # s.dispatch_again()
         i = 0.93
-        s.dispatch_again_batch_for_one_server(i)
+        # s.dispatch_again_batch_for_one_server(i)
+        s.dispatch_again()
         i -= 0.02
         curr_score = s.calc_score95(print_sep=False)
         if (prev_score - curr_score) / curr_score < 0.000003: 
             break
         prev_score = curr_score
-    s.dispatch_again()
-    curr_score = s.calc_score95(print_sep=False)
+    # s.dispatch_again()
+    # curr_score = s.calc_score95(print_sep=False)
+    # print('start batch re-dispatch')
+    # while time.time() - start_time < time_threshould:
+    #     # s.dispatch_again()
+    #     i = 0.93
+    #     s.dispatch_again_batch_for_one_server(i)
+    #     i -= 0.02
+    #     curr_score = s.calc_score95(print_sep=False)
+    #     if (prev_score - curr_score) / curr_score < 0.000003: 
+    #         break
+    #     prev_score = curr_score
 
     s.output()
     if LOCAL: 
