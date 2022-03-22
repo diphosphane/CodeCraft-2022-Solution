@@ -43,6 +43,10 @@ class Dinic():
         level[s] = 1  
         while queue:
             k = queue.pop(0)
+            # for i, cap in F[k].items():
+            #     if (F[k].get(i, 0) < cap) and (level[i] == 0): # not visited
+            #         level[i] = level[k] + 1
+            #         queue.append(i)
             for i in range(n):
                 if (F[k][i] < C[k][i]) and (level[i] == 0): # not visited
                     level[i] = level[k] + 1
@@ -59,10 +63,17 @@ class Dinic():
                 F[k][i] = F[k][i] + f
                 F[i][k] = F[i][k] - f
                 tmp = tmp - f
+        # for i in range(len(C)):
+        #     if (level[i] == level[k] + 1) and (F[k][i] < C[k][i]):
+        #         f = Dfs(C,F,i,min(tmp,C[k][i] - F[k][i]))
+        #         F[k][i] = F[k][i] + f
+        #         F[i][k] = F[i][k] - f
+        #         tmp = tmp - f
         return cp - tmp
 
     def _calc_max_flow(self, C, s, t):
         F = np.zeros((self.cnt, self.cnt), dtype=np.int32)
+        # F = defaultdict(defaultdict(int))
         flow = 0
         while(self.bfs(C,F,s,t)):
             flow = flow + self.dfs(C,F,s,100000)
