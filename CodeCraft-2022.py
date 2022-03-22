@@ -3,11 +3,14 @@ from typing import List, Tuple, Set
 from subprocess import getoutput
 import math
 import time
+from dinic_git import Dinic as Graph
+# from EK import Graph
 from functools import reduce
 from read_data import *
 import numpy as np
 
 cname, sname, qos, qos_lim = None, None, None, None
+start_time = 0
 t_len, s_len, c_len = 0, 0, 0
 time_label = None
 client_demand = None
@@ -33,6 +36,7 @@ class Solution():
         self.record = np.zeros((t_len, s_len, c_len), dtype=np.int32)
         self.t_s_record = np.zeros((t_len, s_len), dtype=np.int32)
         self.t_s_include_c = [ [ set() for _ in range(s_len) ] for _ in range(t_len) ]
+        self.after_95_t_4_s = [ set() for _ in range(s_len) ]
         self.gen_time = 0
         self.assign_time = 0
     
@@ -132,7 +136,7 @@ class Solution():
             print(f'after 95 sum: {after_95_sum}')
         return final_score
     
-    def get_max_idx_gen(self, array: np.ndarray) -> Tuple[int, int]:
+    def get_max_idx_gen(self, array: np.ndarray) -> Tuple[Tuple[int, int], int]:
         arr = array.copy()
         cnt = 0; whole_num = reduce(lambda x,y: x*y, arr.shape)
         while cnt < whole_num:
@@ -338,69 +342,6 @@ class Solution():
                             self.record[t_idx, s_idx_orig, c_idx] -= assign_bw
                             self.t_s_record[t_idx, s_idx_orig] -= assign_bw
                             added_2_prev95_obj[(t_idx, s_idx_new)] = can_dispatch
-
-    def pre_dispatch_then_dispatch(self, record: np.ndarray):
-        my_demand = client_demand.copy()
-        for s_idx, t_idx, idle_value in self.idx_of_max_idle(record):
-            c_idx_avail_set = set(self.qos_avail_for_s[s_idx])
-            c_idx_used_set = set([ c_idx for c_idx, v in enumerate(record[t_idx, s_idx]) if v ])
-            new_c_idx_set = c_idx_avail_set - c_idx_used_set
-            for c_idx in new_c_idx_set:
-                can_dispatch = min(idle_value, my_demand[t_idx, c_idx])
-                if can_dispatch == 0: continue
-                left, assigned_bw = self.assign(t_idx, s_idx, c_idx, can_dispatch)
-                self.server_5_t_idx[s_idx].add(t_idx)
-                self.server_5_value[s_idx][t_idx] += assigned_bw
-                idle_value -= assigned_bw
-                my_demand[t_idx, c_idx] -= assigned_bw
-                if idle_value == 0: break
-        self.dispatch_2_one_server(my_demand)
-
-    def dispatch_from_server_no_mask(self):
-        s_full_filled = np.zeros(s_len, dtype=np.int32)
-        after_95_t_includ_s = defaultdict(set)
-        demand = client_demand.copy()
-        qos_bool_c_s = (qos < qos_lim).T
-        qos_mask = np.zeros((t_len, s_len), dtype=np.int32)
-        arr_t_s_orig = demand @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
-        cnt = 0
-        while cnt < self.higher_95_num * self.avail_s_count:
-            t_idx, s_idx = self.max_idx_of(arr_t_s_orig)
-            # t_idx, s_idx = self.max_idx_of(np.ma.array(arr_t_s_orig, mask=qos_mask))
-            if s_full_filled[s_idx] == self.higher_95_num: 
-                # qos_mask[:, s_idx] = 1
-                arr_t_s_orig[:, s_idx] = 0
-                continue
-            if arr_t_s_orig[t_idx, s_idx] == 0: break
-            c_avail_set = self.qos_avail_for_s[s_idx]
-            if not c_avail_set: continue
-            after_95_t_includ_s[t_idx].add(s_idx)
-            added = 0; left = 0
-            for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
-                if added == bandwidth[s_idx]: break
-                left, assigned = self.assign(t_idx, s_idx, c_idx, demand[t_idx, c_idx])
-                demand[t_idx, c_idx] -= assigned
-                added += assigned
-            # update arr_t_s
-            demand4t = demand[t_idx]
-            if any(demand4t):
-                arr_t_s_orig[t_idx] = demand4t.reshape(1, -1) @ qos_bool_c_s
-            else:
-                arr_t_s_orig[t_idx] = 0
-            s_full_filled[s_idx] += 1
-            cnt += 1
-        for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(demand):
-            s_avail_set = self.qos_avail_for_c[c_idx]
-            s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
-            avg = need_dispatch // len(s_avail_set)
-            remain = need_dispatch - avg * len(s_avail_set)
-            for s_idx in s_avail_set:
-                remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
-            if remain: 
-                for s_idx in s_avail_set:
-                    remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
-            if remain: 
-                raise BaseException('not fully dispatched')
     
     def _restore_idx(self, idx, arr):
         prev_sum = 0; new_idx = idx
@@ -412,14 +353,16 @@ class Solution():
         return new_idx
 
     def dispatch_from_server(self):
+        # DEL:
+        self.sum_at_5 = 0
         s_full_filled = np.zeros(s_len, dtype=np.int32)
         after_95_t_includ_s = defaultdict(set)
-        demand = client_demand.copy()
+        self.demand_after_5_dispatch = client_demand.copy()
         qos_bool_c_s_orig = np.array((qos < qos_lim).T, order='F')
         qos_bool_c_s = qos_bool_c_s_orig
         s_idx_resotre_arr = np.zeros(s_len, dtype=np.int32)
         s_idx_deleted = []
-        arr_t_s = demand @ qos_bool_c_s_orig  # t * c  dot  c * s  -->  t * s
+        arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s_orig  # t * c  dot  c * s  -->  t * s
         cnt = 0
         st = time.time()
         while cnt < self.higher_95_num * self.avail_s_count:
@@ -430,23 +373,25 @@ class Solution():
                 s_idx_resotre_arr[s_idx] = 1
                 s_idx_deleted.append(s_idx)
                 qos_bool_c_s = np.delete(qos_bool_c_s_orig, s_idx_deleted, axis=1)
-                arr_t_s = demand @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
+                arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
                 continue
             c_avail_set = self.qos_avail_for_s[s_idx]
             if not c_avail_set: continue
             after_95_t_includ_s[t_idx].add(s_idx)
+            self.after_95_t_4_s[s_idx].add(t_idx)
             added = 0; left = 0
             for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
                 if added == bandwidth[s_idx]: break
-                left, assigned = self.assign(t_idx, s_idx, c_idx, demand[t_idx, c_idx])
-                demand[t_idx, c_idx] -= assigned
+                left, assigned = self.assign(t_idx, s_idx, c_idx, self.demand_after_5_dispatch[t_idx, c_idx])
+                self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                self.sum_at_5 += assigned  # DEL
                 added += assigned
-            arr_t_s[t_idx] = demand[t_idx].dot(qos_bool_c_s)
+            arr_t_s[t_idx] = self.demand_after_5_dispatch[t_idx].dot(qos_bool_c_s)
             s_full_filled[s_idx] += 1
             cnt += 1
         print(f'matrix used time: {time.time() - st}')
         st = time.time()
-        for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(demand):
+        for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(self.demand_after_5_dispatch):
             s_avail_set = self.qos_avail_for_c[c_idx]
             s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
             avg = need_dispatch // len(s_avail_set)
@@ -460,61 +405,156 @@ class Solution():
                 raise BaseException('not fully dispatched')
         print(f'remain used time: {time.time() - st}')
 
-    def dispatch_from_server_lazy_matrix(self):
-        s_full_filled = np.zeros(s_len, dtype=np.int32)
-        after_95_t_includ_s = defaultdict(set)
-        demand = client_demand.copy()
-        qos_bool_c_s = (qos < qos_lim).T
-        qos_mask = np.zeros((t_len, s_len), dtype=np.int32)
-        arr_t_s_orig = demand @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
-        cnt = 0
-        not_calc_t = set()
-        while cnt < self.higher_95_num * self.avail_s_count:
-            # t_idx, s_idx = self.max_idx_of(arr_t_s_orig)
-            t_idx, s_idx = self.max_idx_of(np.ma.array(arr_t_s_orig, mask=qos_mask))
-            if t_idx in not_calc_t:
-                demand4t = demand[t_idx]
-                if any(demand4t):
-                    arr_t_s_orig[t_idx] = demand4t.reshape(1, -1) @ qos_bool_c_s
-                else:
-                    arr_t_s_orig[t_idx] = 0
-                not_calc_t.remove(t_idx)
-                t_idx, s_idx = self.max_idx_of(np.ma.array(arr_t_s_orig, mask=qos_mask))
-            if s_full_filled[s_idx] == self.higher_95_num: 
-                qos_mask[:, s_idx] = 1
-                # arr_t_s_orig[:, s_idx] = 0
-                continue
-            if arr_t_s_orig[t_idx, s_idx] == 0: break
-            c_avail_set = self.qos_avail_for_s[s_idx]
-            if not c_avail_set: continue
-            after_95_t_includ_s[t_idx].add(s_idx)
-            added = 0; left = 0
-            for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
-                if added == bandwidth[s_idx]: break
-                left, assigned = self.assign(t_idx, s_idx, c_idx, demand[t_idx, c_idx])
-                demand[t_idx, c_idx] -= assigned
-                added += assigned
-            not_calc_t.add(t_idx)
-            # # update arr_t_s
-            # demand4t = demand[t_idx]
-            # if any(demand4t):
-            #     arr_t_s_orig[t_idx] = demand4t.reshape(1, -1) @ qos_bool_c_s
-            # else:
-            #     arr_t_s_orig[t_idx] = 0
-            s_full_filled[s_idx] += 1
-            cnt += 1
-        for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(demand):
-            s_avail_set = self.qos_avail_for_c[c_idx]
-            s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
-            avg = need_dispatch // len(s_avail_set)
-            remain = need_dispatch - avg * len(s_avail_set)
-            for s_idx in s_avail_set:
-                remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
-            if remain: 
-                for s_idx in s_avail_set:
-                    remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
-            if remain: 
-                raise BaseException('not fully dispatched')
+    def _max_idx_4_row(self, arr: np.ndarray):
+        idx = np.argmax(arr, axis=1)
+        return [ self._restore_idx(sel_idx, self.removed_t_idx_4_s[i]) for i, sel_idx in enumerate(idx)]
+    
+    def _del_col_4_arr(self, arr, del_arr):
+        row_cnt = arr.shape[0]
+        del_arr_here = del_arr.reshape(row_cnt, -1)
+        col_cnt = arr.shape[1] - del_arr_here.reshape(row_cnt, -1).shape[1]
+        out_arr = np.empty((row_cnt, col_cnt), dtype=np.int32)
+        for r_idx in range(row_cnt):
+            real_idx = [ self._restore_idx(sel_idx, self.removed_t_idx_4_s[i]) for i, sel_idx in enumerate(del_arr_here)]
+            out_arr[r_idx] = np.delete(arr[r_idx], real_idx)
+            pass
+
+
+    def dispatch_again_3_block(self):
+        # self.removed_t_idx_4_s = np.zeros((s_len, t_len), dtype=np.int32)
+        self.removed_t_s = np.zeros((t_len, s_len), dtype=np.int32)
+        for s_idx, t_set in enumerate(self.after_95_t_4_s):
+            for t_idx in t_set:
+                self.removed_t_s[t_idx, s_idx] = 1
+                # self.removed_t_idx_4_s[s_idx, t_idx] = 1
+        max_t_idx_active_4_s = np.argmax(np.ma.array(self.t_s_record, self.removed_t_s), axis=0)  # t for each s
+        max_value = self.t_s_record[max_t_idx_active_4_s, np.arange(s_len)]
+        tmp_removed_t_s = self.removed_t_s.copy()
+        for s_idx, t_idx in enumerate(max_t_idx_active_4_s):
+            tmp_removed_t_s[t_idx, s_idx] = 1
+        barrier_idx = np.argmax(np.ma.array(self.t_s_record, tmp_removed_t_s), axis=0)
+        barrier_value = self.t_s_record[barrier_idx, np.arange(s_len)]
+        diff = max_value - barrier_value
+        for s_idx, diff_value in enumerate(diff):
+            added_2_prev95_obj = defaultdict(int)  # t,s -> added_value
+            active_t = barrier_idx[s_idx]
+            
+
+            local_record = []  # t, s
+            local_added_2_prev_95_obj = defaultdict() # 
+            pass
+
+
+        active_t_for_server = self._max_idx_4_row()
+        removed_t_for_server = self.after_95_t_4_s
+        active_t_for_server = []
+        to_be_added_t_for_server = []
+        for s_idx in range(s_len):
+            
+            pass
+
+
+    def dispatch_again_3_block(self):
+        self.removed_t_idx_4_s = [ [] for _ in range(s_len) ]
+        for s_idx, t_set in enumerate(self.after_95_t_4_s):
+            for t_idx in t_set:
+                self.removed_t_idx_4_s[s_idx].append(t_idx)
+        active_t_4_s = [ [] for _ in range(s_len) ]
+        
+    def convert2graph_old(self):
+        self.graph = Graph()
+        # define vertex
+        for t in range(t_len+1):  # idx in t_len is gather node for s (used to limit bandwidth)
+            self.graph.add([ f'{t}s{s}' for s in range(s_len) ])
+            self.graph.add([ f'{t}c{c}' for c in range(c_len) ])
+            self.graph.add([ f'{t}e{c}' for c in range(c_len) ])
+        self.graph.add(['s', 't'])
+        self.values_95_for_s = np.argpartition(self.t_s_record, self.idx_95, axis=0)[self.idx_95]
+        for t in range(t_len):
+            for s in range(s_len):
+                self.graph.add_edge('s', f'{t_len}s{s}', self.values_95_for_s[s])
+                self.graph.add_edge(f'{t_len}s{s}', f'{t}s{s}', self.values_95_for_s[s])
+            for c in range(c_len):
+                self.graph.add_edge(f'{t}c{c}', f'{t}e{c}', self.demand_after_5_dispatch[t, c]) # e means end
+                self.graph.add_edge(f'{t}e{c}', 't', client_demand[t, c])
+        for s_idx, t_set in enumerate(self.after_95_t_4_s):
+            for t_idx in t_set:
+                self.graph.add_edge(f'{t_len}s{s_idx}', f'{t_idx}s{s_idx}', 0)
+        for t in range(t_len):
+            for s in range(s_len):
+                c_list = self.qos_avail_for_s[s]
+                for c in c_list:
+                    self.graph.add_edge(f'{t}s{s}', f'{t}c{c}', min(self.demand_after_5_dispatch[t, c], bandwidth[s]))
+    
+    def iterate_s_cap(self):
+        print(f'before iterate s: {self.values_95_for_s.sum()} \n', sorted(self.values_95_for_s, reverse=True))
+        for s_idx, value in enumerate(self.values_95_for_s):
+            if s_idx > 10: break
+            test_value = value / 2
+            for g in self.graph4t:
+                g.add_edge('s', f's{s_idx}', test_value)
+                g.calc_max_flow('s', 't')
+            flow_sum = np.array(self.max_flow_list).sum()
+            diff = self.flow_sum - flow_sum
+            print(f'{s_idx} prev: {self.values_95_for_s[s_idx]} \t reduced: {diff}')
+            if diff:
+                self.values_95_for_s[s_idx] = test_value + diff
+                for g in self.graph4t:
+                    g.add_edge('s', f's{s_idx}', test_value + diff)
+        print(f'after iterate s: {self.values_95_for_s.sum()} \n', sorted(self.values_95_for_s, reverse=True))
+        for g in self.graph4t:
+            g.calc_max_flow('s', 't')
+        flow_sum = np.array(self.max_flow_list).sum()
+        print(f'final flow sum: {flow_sum}')
+        
+        
+
+    def construct_all_graph(self):
+        t_idx_95 = np.argpartition(self.t_s_record, self.idx_95, axis=0)[self.idx_95]
+        self.values_95_for_s = self.t_s_record[t_idx_95, np.arange(s_len)]
+        # max_idx = self.higher_95_num + 1
+        # self.values_95_for_s = np.zeros(s_len, dtype=np.int32)
+        # for s_idx, t_series in enumerate(self.t_s_record.T):
+        #     # idx = np.argpartition(t_series, -max_idx)[-max_idx]
+        #     t_series.sort()
+        #     self.values_95_for_s[s_idx] = t_series[self.idx_95]
+        #     # self.values_95_for_s[s_idx] = t_series[idx]
+        print(f'95% sum at graph: {np.sum(self.values_95_for_s)}')
+        # self.values_95_for_s = self.t_s_record[idxs, np.arange(s_len)]
+        self.graph4t = [ self.construct_graph(t) for t in range(t_len) ]
+        for t in range(t_len):
+            # self.graph4t[t].max_capacity_augment('s', 't')
+            self.graph4t[t].calc_max_flow('s', 't')
+        self.max_flow_list = [ g.max_flow for g in self.graph4t ]
+        self.flow_sum = np.array(self.max_flow_list).sum()
+        print(f'flow sum: {np.array(self.max_flow_list).sum()}')
+        print(f'separate flow: \n {sorted(self.max_flow_list, reverse=True)}')
+        self.after_95_t_4_s
+    
+    def construct_graph(self, t) -> Graph:  # when t = t_len is gather point
+        graph = Graph()
+        graph.add([ f'b{s}' for s in range(s_len) ])  # begin
+        graph.add([ f's{s}' for s in range(s_len) ])  # server
+        graph.add([ f'c{c}' for c in range(c_len) ])  # client
+        graph.add([ f'e{c}' for c in range(c_len) ])  # end
+        graph.add(['s', 't'])
+        for s in range(s_len):
+            graph.add_edge('s', f's{s}', self.values_95_for_s[s])
+        for s, t_set in enumerate(self.after_95_t_4_s):
+            # if t in t_set: graph.add_edge(f's', f's{s}', bandwidth[s])
+            # if t in t_set: graph.add_edge(f's', f's{s}', bandwidth[s]-self.t_s_record[t, s])
+            if t in t_set: graph.add_edge(f's', f's{s}', 0)
+        for s in range(s_len):
+            for c in self.qos_avail_for_s[s]:
+                graph.add_edge(f's{s}', f'c{c}', min(self.demand_after_5_dispatch[t, c], bandwidth[s]))
+        for c in range(c_len):
+            # graph.add_edge(f'c{c}', f't', client_demand[t, c])
+            graph.add_edge(f'c{c}', f't', self.demand_after_5_dispatch[t, c])
+        return graph
+
+    def max_flow_except_5(self):
+        return self.graph.max_flow
+
 
 if __name__ == '__main__':
     get_data()
@@ -526,19 +566,17 @@ if __name__ == '__main__':
         s.calc_score95(False)
     print(f'gen time: {s.gen_time}')
     print(f'assign time: {s.assign_time}')
-    
-    # s = Solution()
-    # start_time = time.time()
-    # s.dispatch_from_server_lazy_matrix()
-    # print(f'used time lazy: {(time.time()-start_time):.2f}')
-    # s.calc_score95(True)
-    
-    # s = Solution()
-    # start_time = time.time()
-    # s.dispatch_from_server_lazy_matrix()
-    # print(f'used time no mask: {(time.time()-start_time):.2f}')
-    # s.calc_score95(True)
 
+    # s.convert2graph()
+    # s.graph.EK_algorithm('s', 't')
+    s.construct_all_graph()
+    # print(f'max flow is: {s.max_flow_except_5}')
+    # for s_idx, t_set in enumerate(s.after_95_t_4_s):
+        
+    print(f'demand except 5% is {s.demand_after_5_dispatch.ravel().sum()}')
+    print(f'sum at 5: {s.sum_at_5}, demand - sum_at_5: {client_demand.ravel().sum()-s.sum_at_5}')
+    # s.iterate_s_cap()
+    
     # s.analyse_larger_than_95()
 
     if LOCAL: 
@@ -548,24 +586,12 @@ if __name__ == '__main__':
     else: 
         time_threshould = 287
 
-    prev_score = s.calc_score95(print_sep=False)
-    while time.time() - start_time < time_threshould:
-        # s.dispatch_again()
-        i = 0.93
-        # s.dispatch_again_batch_for_one_server(i)
-        s.dispatch_again()
-        i -= 0.02
-        curr_score = s.calc_score95(print_sep=False)
-        if (prev_score - curr_score) / curr_score < 0.000003: 
-            break
-        prev_score = curr_score
-    # s.dispatch_again()
-    # curr_score = s.calc_score95(print_sep=False)
-    # print('start batch re-dispatch')
+    # prev_score = s.calc_score95(print_sep=False)
     # while time.time() - start_time < time_threshould:
     #     # s.dispatch_again()
     #     i = 0.93
-    #     s.dispatch_again_batch_for_one_server(i)
+    #     # s.dispatch_again_batch_for_one_server(i)
+    #     s.dispatch_again()
     #     i -= 0.02
     #     curr_score = s.calc_score95(print_sep=False)
     #     if (prev_score - curr_score) / curr_score < 0.000003: 
