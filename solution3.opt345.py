@@ -275,26 +275,24 @@ class Solution():
                     if self.server_5_value[s_idx][t_idx] == bandwidth[s_idx]: # server is full at current time, next loop
                         continue
                     else: # server is not full, try to fill it to full
-                        left, assign_bandwidth = self.assign(t_idx, s_idx, c_idx, demand)
+                        demand, assign_bandwidth = self.assign(t_idx, s_idx, c_idx, demand)
                         self.server_5_value[s_idx][t_idx] += assign_bandwidth
-                        demand = left
-                        if left: continue
-                        else: break
+                        if demand == 0: break
                 elif len(self.server_5_t_idx[s_idx]) != self.higher_95_num: # not in server top 5, top 5 is not full, fill a blank
                     self.server_5_t_idx[s_idx].add(t_idx)
-                    left, assign_bandwidth = self.assign(t_idx, s_idx, c_idx, demand)
+                    demand, assign_bandwidth = self.assign(t_idx, s_idx, c_idx, demand)
                     self.server_5_value[s_idx][t_idx] = assign_bandwidth
-                    demand = left
-                    if left: continue
-                    else: break
+                    if demand == 0: break
                 else:  # not in top 5, top 5 is full, put average in all the avail
                     avg_s_arr = s_arr[idx:]
                     avg_dispatch = math.floor(demand / len(avg_s_arr))
                     remain = demand - avg_dispatch * len(avg_s_arr)
                     for ss_idx in avg_s_arr:
-                        left, _ = self.assign(t_idx, ss_idx, c_idx, avg_dispatch + remain)
-                        remain = left
-                        if left: continue
+                        remain, _ = self.assign(t_idx, ss_idx, c_idx, avg_dispatch + remain)
+                    if remain:
+                        for ss_idx in avg_s_arr:
+                            remain, _ = self.assign(t_idx, ss_idx, c_idx, remain)
+                            if remain == 0: break
                     if remain: raise BaseException("dispatch fail, has remain")
                     demand = 0
                     break
