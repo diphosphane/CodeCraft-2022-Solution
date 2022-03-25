@@ -585,21 +585,21 @@ if __name__ == '__main__':
         s.check_output_valid()
         time_threshould = 10
     else: 
-        time_threshould = 290
+        time_threshould = 285
 
     # s.dispatch_again_batch_for_one_server(0.8)
     # s.calc_score95(True)
     
     # print('after batch cut')
 
-    # prev_score = s.calc_score95(print_sep=False)
-    # while time.time() - start_time < time_threshould:
-    #     s.dispatch_again()
-    #     curr_score = s.calc_score95(print_sep=False)
-    #     if (prev_score - curr_score) / curr_score < 0.000003: 
-    #         break
-    #     prev_score = curr_score
-    # print('iterate end. \n\n\n')
+    prev_score = s.calc_score95(print_sep=False)
+    while time.time() - start_time < time_threshould:
+        s.dispatch_again()
+        curr_score = s.calc_score95(print_sep=False)
+        if (prev_score - curr_score) / curr_score < 0.00000003: 
+            break
+        prev_score = curr_score
+    print('iterate end. \n\n\n')
 
     # s.dispatch_again_batch_for_one_server(0.85)
 
