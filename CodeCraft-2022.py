@@ -818,6 +818,91 @@ class Solution():
             if demand:
                 raise BaseException("dispatch fail")
 
+    def dispatch_from_server_after_95_barrier(self):
+        self.sum_at_5 = 0
+        s_full_filled = np.zeros(s_len, dtype=np.int32)
+        after_95_t_includ_s = defaultdict(set)
+        self.demand_after_5_dispatch = client_demand.copy()
+        qos_bool_c_s_orig = np.array((qos < qos_lim).T, order='F')
+        qos_bool_c_s = qos_bool_c_s_orig
+        s_idx_resotre_arr = np.zeros(s_len, dtype=np.int32)
+        s_idx_deleted = []
+        arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s_orig  # t * c  dot  c * s  -->  t * s
+        cnt = 0
+        st = time.time()
+        while cnt < self.higher_95_num * self.avail_s_count:
+            t_idx, s_idx = self.max_idx_of(arr_t_s)
+            if arr_t_s[t_idx, s_idx] == 0: break
+            s_idx = self._restore_idx(s_idx, s_idx_resotre_arr)
+            if s_full_filled[s_idx] == self.higher_95_num: 
+                s_idx_resotre_arr[s_idx] = 1
+                s_idx_deleted.append(s_idx)
+                qos_bool_c_s = np.delete(qos_bool_c_s_orig, s_idx_deleted, axis=1)
+                arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
+                continue
+            c_avail_set = self.qos_avail_for_s[s_idx]
+            if not c_avail_set: continue
+            after_95_t_includ_s[t_idx].add(s_idx)
+            self.after_95_t_4_s[s_idx].add(t_idx)
+            added = 0; left = 0
+            for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
+                if added == bandwidth[s_idx]: break
+                left, assigned = self.assign(t_idx, s_idx, c_idx, self.demand_after_5_dispatch[t_idx, c_idx])
+                self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                self.sum_at_5 += assigned  # DEL
+                added += assigned
+            arr_t_s[t_idx] = self.demand_after_5_dispatch[t_idx].dot(qos_bool_c_s)
+            s_full_filled[s_idx] += 1
+            cnt += 1
+        print(f'matrix used time: {time.time() - st}')
+        self.after_95_record = self.record.copy()
+        st = time.time()
+        barrier = np.zeros(s_len, dtype=np.int32)
+        for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(self.demand_after_5_dispatch):
+            s_avail_set = self.qos_avail_for_c[c_idx]
+            s_avail_list = list(s_avail_set - after_95_t_includ_s[t_idx])
+
+            # dispatch to max
+            for s_idx in s_avail_list:
+                can_dispatch = max(0, barrier[s_idx] - self.t_s_record[t_idx, s_idx])
+                if can_dispatch:
+                    left, assigned = self.assign(t_idx, s_idx, c_idx, min(need_dispatch, can_dispatch))
+                    need_dispatch -= assigned
+                    if need_dispatch == 0: break
+
+            # after dispatch will at 95%
+            max_can_dispatch = bandwidth[s_avail_list] - self.t_s_record[t_idx, s_avail_list]
+            avg = need_dispatch // len(s_avail_list)
+            dispatch_to_each = np.ones(len(s_avail_list), dtype=np.int32) * avg
+            remain = need_dispatch - avg * len(s_avail_list)
+            # dispatch_to_each[: remain] += 1
+            can_not_dispatch = dispatch_to_each > max_can_dispatch
+            can_not_dispatch_value = np.maximum((dispatch_to_each - max_can_dispatch), 0).sum()
+            remain += can_not_dispatch_value
+            remain_can_dispatch_num = (len(s_avail_list) - can_not_dispatch.sum())
+            avg_for_remain = remain // remain_can_dispatch_num
+            remain_for_remain = remain - avg_for_remain * remain_can_dispatch_num
+            prev_remain = 0
+            for i, s_idx in enumerate(s_avail_list):
+                dispatch_value = dispatch_to_each[i] + prev_remain
+                if can_not_dispatch[i] != True:
+                    dispatch_value += avg_for_remain
+                if remain_for_remain and (can_not_dispatch[i] != True):
+                    dispatch_value += 1
+                    remain_for_remain -= 1
+                remain, assigned = self.assign(t_idx, s_idx, c_idx, dispatch_value)
+                # if remain: raise BaseException(r'not fully dispatched before 95% at a server')
+                prev_remain = remain
+                barrier[s_idx] = max(self.t_s_record[t_idx, s_idx], barrier[s_idx])
+
+            # for s_idx in s_avail_set:
+            #     remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
+            # if remain: 
+            #     for s_idx in s_avail_set:
+            #         remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
+            # if remain: 
+            #     raise BaseException('not fully dispatched')
+        print(f'remain used time: {time.time() - st}')
 
 
 if __name__ == '__main__':
@@ -825,10 +910,11 @@ if __name__ == '__main__':
     start_time = time.time()
     s = Solution()
     # s.dispatch_from_server_no_avg()
-    s.dispatch_from_server()
+    # s.dispatch_from_server()
     # s.dispatch_from_server_5_times_no_avg()
     # s.dispatch_from_server_5_times()
     # s.dispatch()
+    s.dispatch_from_server_after_95_barrier()
     if LOCAL: 
         print(f'used time normal: {(time.time()-start_time):.2f}')
         s.calc_score95(False)
