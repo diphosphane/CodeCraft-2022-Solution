@@ -1,9 +1,12 @@
 from collections import defaultdict
 from typing import List, Tuple, Set
 from subprocess import getoutput
+from itertools import product
+from random import shuffle
+from copy import deepcopy
 import math
 import time
-from dinic_git import Dinic as Graph
+# from dinic import Dinic as Graph
 # from EK import Graph
 from functools import reduce
 from read_data import *
@@ -37,24 +40,45 @@ class Solution():
         self.t_s_record = np.zeros((t_len, s_len), dtype=np.int32)
         self.t_s_include_c = [ [ set() for _ in range(s_len) ] for _ in range(t_len) ]
         self.after_95_t_4_s = [ set() for _ in range(s_len) ]
-        self.gen_time = 0
-        self.assign_time = 0
     
     def init_qos(self):
         def _qos4c(c_idx: int) -> List[int]:
             c_qos = qos[:, c_idx]
             qos_avail = c_qos < qos_lim
             out = [ s_idx for s_idx, avail in enumerate(qos_avail) if avail ]
-            return set(out)
+            return out
         
         def _qos4s(s_idx: int) -> List[int]:
             s_qos = qos[s_idx, :]
             qos_avail = s_qos < qos_lim
             out = [ c_idx for c_idx, avail in enumerate(qos_avail) if avail ]
-            return set(out)
+            return out
 
         self.qos_avail_for_c = [ _qos4c(c_idx) for c_idx in range(c_len) ]
+        self.qos_avail_num_for_c = np.array([ len(i) for i in self.qos_avail_for_c])
         self.qos_avail_for_s = [ _qos4s(s_idx) for s_idx in range(s_len) ]
+        self.qos_avail_num_for_s = np.array([ len(i) for i in self.qos_avail_for_s])
+
+        # new_qos_c = []
+        # for c_idx in range(c_len):
+        #     s_avail = self.qos_avail_for_c[c_idx]
+        #     count = np.array([ self.qos_avail_num_for_s[s_idx] for s_idx in s_avail ])
+        #     arg = np.argsort(-count)
+        #     new_order = [ s_avail[i] for i in arg ]
+        #     new_qos_c.append(new_order)
+        # self.qos_avail_for_c = new_qos_c
+
+        # new_qos_s = []
+        # for s_idx in range(s_len):
+        #     c_avail = self.qos_avail_for_s[s_idx]
+        #     count = np.array([ self.qos_avail_num_for_c[c_idx] for c_idx in c_avail ])
+        #     arg = np.argsort(-count)
+        #     new_order = [ c_avail[i] for i in arg ]
+        #     new_qos_s.append(new_order)
+        # self.qos_avail_for_s = new_qos_s
+
+        self.qos_avail_for_c_set = [ set(s_list) for s_list in self.qos_avail_for_c ]
+        self.qos_avail_for_s_set = [ set(c_list) for c_list in self.qos_avail_for_s ]
         self.avail_s_count = 0
         for each in self.qos_avail_for_s:
             if each: self.avail_s_count += 1
@@ -75,14 +99,12 @@ class Solution():
         demand_sum = self.record.sum(axis=1)
         for t_idx, sum_at_each_time in enumerate(demand_sum):
             c_demand_at_t = client_demand[t_idx]
-            if np.any(c_demand_at_t - sum_at_each_time):
-            # if c_demand_at_t != sum_at_each_time:
+            if np.any(c_demand_at_t - sum_at_each_time): # if c_demand_at_t != sum_at_each_time:
                 print(f'client demand is not equal at time {t_idx}')
                 print(f'calculated: \n{sum_at_each_time} \n\n required: \n{c_demand_at_t}')
                 print(f'difference (calculated_demand - required_demand): \n {sum_at_each_time - c_demand_at_t}')
                 exit(1)
-        if np.any(demand_sum - client_demand):
-        # if demand_sum != client_demand:
+        if np.any(demand_sum - client_demand): # if demand_sum != client_demand:
             print('client demand is not equal')
             exit(1)
         # check qos
@@ -97,7 +119,6 @@ class Solution():
                             print(f'dispatch bandwidth < 0 in time {t_idx}, server {sname[s_idx]} (index: {s_idx}), client {cname[c_idx]} (index: {c_idx})')
                             exit(1)
         # check server upper limit
-        # bw_sum = self.record.sum(axis=-1)
         bw_sum = self.t_s_record
         for t_idx, sum_at_t in enumerate(bw_sum):
             if np.any(sum_at_t > bandwidth):
@@ -121,7 +142,6 @@ class Solution():
                 tmp += ','.join(out_list)
                 self.f.write(tmp + '\n')
         self.f.close()
-        if LOCAL: self.calc_score95()
     
     def calc_score95(self, print_sep=True):
         bw_each_time = self.t_s_record.copy()
@@ -138,14 +158,15 @@ class Solution():
             print(f'after 95 sum: {after_95_sum}')
         return final_score
     
-    def get_max_idx_gen(self, array: np.ndarray) -> Tuple[Tuple[int, int], int]:
+    @staticmethod
+    def max_idx_gen(array: np.ndarray) -> Tuple[Tuple[int, int], int]:
         arr = array.copy()
         cnt = 0; whole_num = reduce(lambda x,y: x*y, arr.shape)
         while cnt < whole_num:
-            st = time.time()
             idx = np.unravel_index(np.argmax(arr), arr.shape)
-            self.gen_time += (time.time() - st)
-            yield idx, arr[idx]
+            value = arr[idx]
+            if value == 0: return
+            yield idx, value
             arr[idx] = 0
             cnt += 1
     
@@ -158,127 +179,457 @@ class Solution():
         upper_limit = bandwidth[s_idx]
         if add_up > upper_limit: # assign fail
             left = add_up - upper_limit
-            assign_bandwidth = demand - left
-            if assign_bandwidth != 0: self.t_s_include_c[t_idx][s_idx].add(c_idx)
-            self.record[t_idx, s_idx, c_idx] += assign_bandwidth
-            st = time.time()
-            self.t_s_record[t_idx, s_idx] += assign_bandwidth
-            self.assign_time += (time.time() - st)
-            return left, assign_bandwidth
+            assigned = demand - left
+            if assigned != 0: self.t_s_include_c[t_idx][s_idx].add(c_idx)
+            self.record[t_idx, s_idx, c_idx] += assigned
+            self.t_s_record[t_idx, s_idx] += assigned
+            return left, assigned
         self.record[t_idx, s_idx, c_idx] += demand
-        st = time.time()
         self.t_s_record[t_idx, s_idx] += demand
-        self.assign_time += (time.time() - st)
         if demand != 0: self.t_s_include_c[t_idx][s_idx].add(c_idx)
         return 0, demand
-    
-    def dispatch_to_small(self, barrier_list: List[int], t_idx: int, s_idx: int):
-        barrier = barrier_list[s_idx]
-        # sum_at_here = self.record[t_idx, s_idx].sum()  
-        # return max(barrier - sum_at_here - 1, 0)
-        return max(barrier - self.t_s_record[t_idx, s_idx], 0)  # TODO: why -1?
-    
-    def analyse_larger_than_95(self):
-        self.t_c_larger_95_not_full_rec = {}  # (t_idx, c_idx) -> (s_idx, can_fill_bw)
-        for s_idx in range(s_len):
-            upper_limit = bandwidth[s_idx]
-            for t_idx in self.server_5_t_idx[s_idx]:
-                c_series = self.record[t_idx, s_idx]
-                c_idx_arr = np.arange(c_len)[c_series > 0]
-                for c_idx in c_idx_arr:
-                    can_fill_bw = upper_limit - self.t_s_record[t_idx, s_idx]
-                    self.t_c_larger_95_not_full_rec[(t_idx, c_idx)] = (s_idx, can_fill_bw)
     
     def index_of(self, perc: float) -> int:
         return math.ceil(t_len * perc) - 1
 
-    def _get_95_and_barrier_for_s(self, barrier_perc: float): 
-        # arr = self.record.sum(axis=-1).T  # arr: s_idx, t_idx
-        arr = self.t_s_record.T
-        idx_barrier = self.index_of(barrier_perc)
-        idx = np.argpartition(arr, (idx_barrier, self.idx_95))  # s_idx, t_idx
-        out_idx = idx[:, idx_barrier+1: self.idx_95 + 1]  # idx for t  # TODO: may have problem
-        idx = idx[:, [idx_barrier, self.idx_95]]
-        idx_1 = np.tile(np.arange(s_len).reshape(-1, 1), 2)
-        values_barrier, values_95 = arr[idx_1, idx].T
-        return out_idx, values_barrier, values_95
+    def _restore_idx(self, idx, arr):
+        prev_sum = 0; new_idx = idx
+        new_sum = arr[:idx+1].sum()
+        while prev_sum != new_sum:
+            prev_sum = new_sum
+            new_idx = idx + new_sum
+            new_sum = arr[:new_idx+1].sum()
+        return new_idx
+
+    # def _get_demand_out(self, g: Graph):
+    #     c_demand = np.zeros(c_len, dtype=np.int32)
+    #     for c in range(c_len):
+    #         c_demand[c] = g.get_flow(f'c{c}', 't')
+    #     return c_demand
     
-    def dispatch_again_batch_for_one_server(self, barrier_perc=0.8):
-        can_cut_t_idxs, values_barrier, values_95 = self._get_95_and_barrier_for_s(barrier_perc)
-        prior_idx = np.argsort(values_barrier - values_95)  # s_idx
-        barrier_in_progress = values_95.copy()
-        added_2_prev95_obj = defaultdict(int)
-        for s_idx_orig in prior_idx:
-            barrier = values_barrier[s_idx_orig]
-            barrier_in_progress[s_idx_orig] = barrier
-            res_at_95 = values_95[s_idx_orig]
-            if res_at_95 == 0: continue
-            for t_idx in can_cut_t_idxs[s_idx_orig]:   # find t_idx in prec% ~ 95%
-                can_move_value = self.t_s_record[t_idx, s_idx_orig] - barrier
-                can_move_perc = can_move_value / res_at_95
-                for c_idx, res_at_c in enumerate(self.record[t_idx, s_idx_orig]):  # in this t_idx, contains c_idx
-                    demand = math.ceil(res_at_c * can_move_perc)
-                    for s_idx_new in self.qos_avail_for_c[c_idx]:
+    # def iterate_s_cap(self):
+    #     print(f'before iterate s: {self.values_95_for_s.sum()} \n', sorted(self.values_95_for_s, reverse=True))
+    #     arg = np.argsort(self.values_95_for_s)
+    #     not_reduced_list = []
+    #     for s_idx in arg:
+    #         value = self.values_95_for_s[s_idx]
+    #         if value == 0: continue
+    #         test_value = value
+    #         flow_diff_max = 0
+    #         test_value = test_value // 2
+    #         for t_idx, g in enumerate(self.graph4t):
+    #             g.add_edge('s', f's{s_idx}', test_value)
+    #             g.calc_max_flow('s', 't')
+    #             d_out = self._get_demand_out(g)
+    #             flow_diff = self.demand_after_5_dispatch[t_idx].sum() - d_out.sum()
+    #             flow_diff_max = max(flow_diff_max, flow_diff)
+    #         # re-define flow diff
+    #         reduced = value - test_value - flow_diff_max
+    #         if flow_diff_max == 0:
+    #             not_reduced_list.append(s_idx)
+    #         print(f'server index: {s_idx} \t prev: {value} \t test value: {test_value} \t flow diff: {flow_diff_max} \t reduced: {reduced}')
+    #         if flow_diff_max:
+    #             self.values_95_for_s[s_idx] = test_value + flow_diff_max
+    #             for g in self.graph4t:
+    #                 g.add_edge('s', f's{s_idx}', test_value + flow_diff_max)
+    #     # second time reduce in network flow
+    #     print('start 2nd time network flow reduce')
+    #     print('iterate list: ', not_reduced_list)
+    #     for s_idx in not_reduced_list:
+    #         flow_diff_max = 0
+    #         test_value = 0
+    #         for t_idx, g in enumerate(self.graph4t):
+    #             g.add_edge('s', f's{s_idx}', test_value)
+    #             g.calc_max_flow('s', 't')
+    #             d_out = self._get_demand_out(g)
+    #             flow_diff = self.demand_after_5_dispatch[t_idx].sum() - d_out.sum()
+    #             flow_diff_max = max(flow_diff_max, flow_diff)
+    #         # re-define flow diff
+    #         reduced = value - test_value - flow_diff_max
+    #         if flow_diff_max == 0:
+    #             not_reduced_list.append(s_idx)
+    #         print(f'server index: {s_idx} prev: {value} \t test value: {test_value} \t flow diff: {flow_diff_max} \t reduced: {reduced}')
+    #         if flow_diff_max:
+    #             self.values_95_for_s[s_idx] = test_value + flow_diff_max
+    #             for g in self.graph4t:
+    #                 g.add_edge('s', f's{s_idx}', test_value + flow_diff_max)
+            
+    #         pass
+    #     print(f'after iterate s: {self.values_95_for_s.sum()} \n', sorted(self.values_95_for_s, reverse=True))
+    #     for g in self.graph4t:
+    #         g.calc_max_flow('s', 't')
+    #     flow_sum = np.array(self.max_flow_list).sum()
+    #     print(f'final flow sum: {flow_sum}')
+        
+    # def read_out_network(self):
+    #     self.record = self.after_95_record
+    #     for t_idx, g in enumerate(self.graph4t):
+    #         for s_idx in range(s_len):
+    #             for c_idx in range(c_len):
+    #                 v = g.get_flow(f's{s_idx}', f'c{c_idx}')
+    #                 self.record[t_idx, s_idx, c_idx] += v
+    #     self.t_s_record = self.record.sum(axis=-1)
+
+    # def construct_all_graph(self):
+    #     t_idx_95 = np.argpartition(self.t_s_record, self.idx_95, axis=0)[self.idx_95]
+    #     self.values_95_for_s = self.t_s_record[t_idx_95, np.arange(s_len)]
+    #     print(f'95% sum at graph: {np.sum(self.values_95_for_s)}')
+    #     self.graph4t: List[Graph] = [ self.construct_graph(t) for t in range(t_len) ]
+    #     for t in range(t_len):
+    #         self.graph4t[t].calc_max_flow('s', 't')
+    #     self.max_flow_list = [ g.max_flow for g in self.graph4t ]
+    #     self.flow_sum = np.array(self.max_flow_list).sum()
+    #     print(f'flow sum: {np.array(self.max_flow_list).sum()}')
+    #     print(f'separate flow: \n {sorted(self.max_flow_list, reverse=True)}')
+    #     self.after_95_t_4_s
+    
+    # def construct_graph(self, t) -> Graph:  # when t = t_len is gather point
+    #     graph = Graph()
+    #     graph.add([ f's{s}' for s in range(s_len) ])  # server
+    #     graph.add([ f'c{c}' for c in range(c_len) ])  # client
+    #     graph.add(['s', 't'])
+    #     for s in range(s_len):
+    #         graph.add_edge('s', f's{s}', self.values_95_for_s[s])
+    #     for s, t_set in enumerate(self.after_95_t_4_s):
+    #         if t in t_set: graph.add_edge(f's', f's{s}', 0)
+    #     for s in range(s_len):
+    #         for c in self.qos_avail_for_s[s]:
+    #             graph.add_edge(f's{s}', f'c{c}', min(self.demand_after_5_dispatch[t, c], bandwidth[s]))
+    #     for c in range(c_len):
+    #         graph.add_edge(f'c{c}', f't', self.demand_after_5_dispatch[t, c])
+    #     return graph
+    
+    def dispatch(self):
+        my_client_demand = client_demand.copy()
+        after_95_dispatched_t_4_s = [ set() for _ in range(s_len) ]
+        after_95_dispatched_s_4_t = [ set() for _ in range(t_len) ]
+        demand_avg_s = np.zeros((t_len, c_len))
+        for c in range(c_len):
+            demand_avg_s[:, c] = my_client_demand[:, c] / len(self.qos_avail_for_c[c])
+        # dispatch to not dispatched yet for pos > 95%
+        while True:
+            t_idx, c_idx = self.max_idx_of(demand_avg_s)
+            if demand_avg_s[t_idx, c_idx] == 0: break
+            need_to_dispatch = my_client_demand[t_idx, c_idx]
+            # dispatch to empty server
+            s_qos_avail_list = self.qos_avail_for_c[c_idx]
+            empty_count = [ self.higher_95_num - len(after_95_dispatched_t_4_s[s_idx]) for s_idx in s_qos_avail_list ]
+            remain_for_avail_s = [ bandwidth[s_idx] - self.t_s_record[t_idx, s_idx] for s_idx in s_qos_avail_list ]
+            arg = np.lexsort((remain_for_avail_s, empty_count)); arg_idx = -1
+            changed = False
+            while need_to_dispatch and arg_idx >= -len(s_qos_avail_list) and empty_count[arg[arg_idx]] > 0:
+                s_idx = s_qos_avail_list[arg[arg_idx]]
+                after_95_dispatched_t_4_s[s_idx].add(t_idx)
+                after_95_dispatched_s_4_t[t_idx].add(s_idx)
+                need_to_dispatch, assigned = self.assign(t_idx, s_idx, c_idx, need_to_dispatch)
+                my_client_demand[t_idx, c_idx] -= assigned
+                arg_idx -= 1
+                changed = True
+            if not changed:
+                demand_avg_s[t_idx, c_idx] = 0
+                continue
+            for c_idx in range(c_len):
+                occupied_num = 0
+                for s_idx in self.qos_avail_for_c[c_idx]:
+                    if t_idx in after_95_dispatched_t_4_s[s_idx]: 
+                        occupied_num += 1
+                can_dispatch_num = self.qos_avail_num_for_c[c_idx] - occupied_num
+                demand_avg_s[t_idx, c_idx] = my_client_demand[t_idx, c_idx] / can_dispatch_num  # TODO: may div by 0
+        
+        # dispatch the remain
+        for (t_idx, c_idx), need_to_dispatch in self.max_idx_gen(my_client_demand): # TODO: need to change client_demand ?
+            # max dispatch to pos > 95%
+            before_95_s = []
+            for s_idx in self.qos_avail_for_c[c_idx]:
+                if s_idx in after_95_dispatched_s_4_t[t_idx] or len(after_95_dispatched_t_4_s[s_idx]) < self.higher_95_num:
+                    need_to_dispatch, assigned = self.assign(t_idx, s_idx, c_idx, need_to_dispatch)
+                    after_95_dispatched_t_4_s[s_idx].add(t_idx)
+                    after_95_dispatched_s_4_t[t_idx].add(s_idx)
+                    if need_to_dispatch == 0: break
+                else:
+                    before_95_s.append(s_idx)
+            if need_to_dispatch == 0: continue
+            # after_95_s = set(after_95_dispatched_s_4_t[t_idx])
+            # if after_95_s:
+            #     # after_95_remain_bw = [ bandwidth[s_idx] - self.t_s_record[t_idx, s_idx] for s_idx in after_95_s ]
+            #     for s_idx in after_95_s.intersection(set(self.qos_avail_for_c[c_idx])):
+            #         need_to_dispatch, assigned = self.assign(t_idx, s_idx, c_idx, need_to_dispatch)
+            #         if need_to_dispatch == 0: break
+            #     if need_to_dispatch == 0: continue
+
+            # avg dispatch to pos < 95%  # TODO: can dispatch to the same level in server
+
+            # before_95_s = list(set(self.qos_avail_for_c[c_idx]) - set(after_95_s))
+            avg = need_to_dispatch // len(before_95_s)  # can avg dispatch to server
+            remain = need_to_dispatch - avg * len(before_95_s)
+            for s_idx in before_95_s:
+                if need_to_dispatch == 0: break
+                remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
+                need_to_dispatch -= assigned
+                if need_to_dispatch == 0: break
+            if need_to_dispatch:
+                raise BaseException('not dispatch all')
+    
+    def dispatch_old(self):
+        self.server_5_t_idx = [ set() for _ in range(len(sname)) ]
+        self.server_5_value = [ defaultdict(int) for _ in range(len(sname)) ]
+        for (t_idx, c_idx), demand in self.max_idx_gen(client_demand):
+            s_list = list(self.qos_avail_for_c[c_idx])
+            occu_5_num = []
+            occu_5_num = [ len(self.server_5_t_idx[s_idx])-(t_idx in self.server_5_t_idx[s_idx]) for s_idx in s_list ]
+            arg = np.argsort(np.array(occu_5_num))
+            s_arr = np.array(s_list)[arg]
+            for idx, s_idx in enumerate(s_arr):
+                if t_idx in self.server_5_t_idx[s_idx]: # in server top 5, put all the resources into
+                    if self.server_5_value[s_idx][t_idx] == bandwidth[s_idx]: # server is full at current time, next loop
+                        if demand: raise BaseException("1")
+                        continue
+                    else: # server is not full, try to fill it to full
+                        demand, assigned = self.assign(t_idx, s_idx, c_idx, demand)
+                        self.server_5_value[s_idx][t_idx] += assigned
+                        if demand == 0: break
+                    if demand: raise BaseException("2")
+                elif len(self.server_5_t_idx[s_idx]) != self.higher_95_num: # not in server top 5, top 5 is not full, fill a blank
+                    if self.server_5_value[s_idx][t_idx] == bandwidth[s_idx]: # server is full at current time, next loop
+                        continue
+                    self.server_5_t_idx[s_idx].add(t_idx)
+                    demand, assigned = self.assign(t_idx, s_idx, c_idx, demand)
+                    self.server_5_value[s_idx][t_idx] += assigned
+                    if demand: raise BaseException("3")
+                    if demand == 0: break
+                else:  # not in top 5, top 5 is full, put average in all the avail
+                    avg_s_arr = s_arr[idx:]
+                    avg_dispatch = math.floor(demand / len(avg_s_arr))
+                    remain = demand - avg_dispatch * len(avg_s_arr)
+                    for ss_idx in avg_s_arr:
+                        remain, assigned = self.assign(t_idx, ss_idx, c_idx, avg_dispatch + remain)
+                        if remain == 0: break
+                    if remain:
+                        for ss_idx in avg_s_arr:
+                            remain, _ = self.assign(t_idx, ss_idx, c_idx, remain)
+                            if remain == 0: break
+                    if remain: raise BaseException("dispatch fail, has remain")
+                    break
+            if demand:
+                raise BaseException("dispatch fail")
+    
+    def _avg_to_each(self, max_can_dispatch, need_dispatch, before_95_list):
+        avg = need_dispatch // len(before_95_list)
+        remain = need_dispatch - avg * len(before_95_list)
+        # dispatch_to_each = np.ones(s_len, dtype=np.int32) * avg
+        dispatch_to_each = np.zeros(s_len, dtype=np.int32)
+        for s_idx in before_95_list:
+            dispatch_to_each[s_idx] = avg
+        i = 0
+        while remain:
+            idx = before_95_list[i]
+            dispatch_to_each[idx] += 1
+            i += 1
+            remain -= 1
+        can_not_dispatch_value = 0
+        can_dispatch_bool = np.zeros(s_len, dtype=bool)
+        for s_idx in before_95_list:
+            can_dispatch_bool[s_idx] = True
+        for s_idx in before_95_list:
+            if dispatch_to_each[s_idx] > max_can_dispatch[s_idx]:
+                can_not_dispatch_value += dispatch_to_each[s_idx] - max_can_dispatch[s_idx]
+                dispatch_to_each[s_idx] = max_can_dispatch[s_idx]
+                can_dispatch_bool[s_idx] = False
+        while can_not_dispatch_value:
+            can_dispatch_cnt = can_dispatch_bool.sum()
+            avg = can_not_dispatch_value // can_dispatch_cnt
+            remain = can_not_dispatch_value - avg * can_dispatch_cnt
+            for s_idx in before_95_list:
+                if can_dispatch_bool[s_idx]:
+                    dispatch_to_each[s_idx] += avg
+                    if remain:
+                        dispatch_to_each[s_idx] += 1
+                        remain -= 1
+            can_not_dispatch_value = 0
+            for s_idx in before_95_list:
+                if dispatch_to_each[s_idx] > max_can_dispatch[s_idx]:
+                    can_not_dispatch_value += dispatch_to_each[s_idx] - max_can_dispatch[s_idx]
+                    dispatch_to_each[s_idx] = max_can_dispatch[s_idx]
+                    can_dispatch_bool[s_idx] = False
+        return dispatch_to_each
+        # avg = need_dispatch // len(before_95_list)
+        # remain = need_dispatch - avg * len(before_95_list)
+        # # dispatch_to_each = np.ones(s_len, dtype=np.int32) * avg
+        # dispatch_to_each = np.zeros(s_len, dtype=np.int32)
+        # for s_idx in before_95_list:
+        #     dispatch_to_each[s_idx] = avg
+        # i = 0
+        # while remain:
+        #     idx = before_95_list[i]
+        #     dispatch_to_each[idx] += 1
+        #     i += 1
+        #     remain -= 1
+        # can_not_dispatch_value = 0
+        # can_dispatch_bool = np.zeros(s_len, dtype=bool)
+        # for s_idx in before_95_list:
+        #     can_dispatch_bool[s_idx] = True
+        # for s_idx in before_95_list:
+        #     if dispatch_to_each[s_idx] > max_can_dispatch[s_idx]:
+        #         can_not_dispatch_value += dispatch_to_each[s_idx] - max_can_dispatch[s_idx]
+        #         can_dispatch_bool[s_idx] = False
+        # while can_not_dispatch_value:
+        #     can_dispatch_cnt = can_dispatch_bool.sum()
+        #     avg = can_not_dispatch_value // can_dispatch_cnt
+        #     remain = can_not_dispatch_value - avg * can_dispatch_cnt
+        #     for s_idx in before_95_list:
+        #         if can_dispatch_bool[s_idx]:
+        #             dispatch_to_each[s_idx] += avg
+        #             if remain:
+        #                 dispatch_to_each[s_idx] += 1
+        #                 remain -= 1
+        #     can_not_dispatch_value = 0
+        #     for s_idx in before_95_list:
+        #         if dispatch_to_each[s_idx] > max_can_dispatch[s_idx]:
+        #             can_not_dispatch_value += dispatch_to_each[s_idx] - max_can_dispatch[s_idx]
+        #             can_dispatch_bool[s_idx] = False
+        # return dispatch_to_each
+
+    def dispatch_t_avg(self):
+        demand_avg = np.zeros(t_len, dtype=np.float32)
+        demand = client_demand.copy()
+        for t_idx in range(t_len):
+            s_set = set()
+            for c_idx, c_demand in enumerate(demand[t_idx]):
+                if c_demand: s_set.update(self.qos_avail_for_c_set[c_idx])
+            demand_avg[t_idx] = demand[t_idx].sum() / len(s_set)
+        ts_assign = [ set() for _ in range(t_len)]
+        st_assign = [ set() for _ in range(s_len)]
+        qos_bool = qos < qos_lim
+        ts_visited = np.zeros((t_len, s_len), dtype=bool)
+        while True:
+            t_idx = np.argmax(demand_avg)
+            if demand_avg[t_idx] == 0:
+                break
+            s_sum_at_t = demand[t_idx] @ qos_bool.T
+            idx = -1
+            s_idx = np.argsort(s_sum_at_t)[idx]
+            while len(st_assign[s_idx]) == self.higher_95_num and idx > -self.higher_95_num:
+                idx -= 1
+                s_idx = np.argsort(s_sum_at_t)[idx]
+            if ts_visited[t_idx, s_idx]:
+                demand_avg[t_idx] = 0
+                continue
+            if len(st_assign[s_idx]) >= self.higher_95_num:
+                demand_avg[t_idx] = 0
+                continue
+            ############## dispatch all ###############
+            for c_idx in self.qos_avail_for_s[s_idx]:
+                left, assigned = self.assign(t_idx, s_idx, c_idx, demand[t_idx, c_idx])
+                if assigned:
+                    st_assign[s_idx].add(t_idx)
+                    ts_assign[t_idx].add(s_idx)
+                    demand[t_idx, c_idx] -= assigned
+            ############## dispatch avg ###############
+            # ratio = demand[t_idx][self.qos_avail_for_s[s_idx]] / demand[t_idx][self.qos_avail_for_s[s_idx]].sum()
+            # left = 0
+            # max_to_dispatch = bandwidth[s_idx] - self.t_s_record[t_idx, s_idx]
+            # for i, c_idx in enumerate(self.qos_avail_for_s[s_idx]):
+            #     left, assigned = self.assign(t_idx, s_idx, c_idx, math.ceil(max_to_dispatch * ratio[i]) + left)
+            #     if assigned:
+            #         st_assign[s_idx].add(t_idx)
+            #         ts_assign[t_idx].add(s_idx)
+            #         demand[t_idx, c_idx] -= assigned
+            # if left:
+            #     for c_idx in self.qos_avail_for_s[s_idx]:
+            #         left, assigned = self.assign(t_idx, s_idx, c_idx, left)
+            #         if assigned:
+            #             st_assign[s_idx].add(t_idx)
+            #             ts_assign[t_idx].add(s_idx)
+            #             demand[t_idx, c_idx] -= assigned
+            #         if left == 0: break
+            ############## dispatch end ###############
+            s_set = set()
+            for c_idx, c_demand in enumerate(demand[t_idx]):
+                if c_demand: s_set.update(self.qos_avail_for_c_set[c_idx])
+            s_set = s_set - ts_assign[t_idx]
+            ts_visited[t_idx, s_idx] = True
+            if len(s_set) == 0:
+                demand_avg[t_idx] = 0
+            else:
+                demand_avg[t_idx] = demand[t_idx].sum() / len(s_set)
+        # to fill after 95
+        for (t_idx, c_idx), need_dispatch in self.max_idx_gen(demand):
+            if need_dispatch == 0: break
+            for s_idx in self.qos_avail_for_c[c_idx]:
+                if t_idx not in st_assign[s_idx] and len(st_assign[s_idx]) == self.higher_95_num:
+                # if s_idx not in ts_assign[t_idx] and len(st_assign[s_idx]) == self.higher_95_num: 
+                    continue
+            # for s_idx in ts_assign[t_idx]:
+                # if c_idx not in self.qos_avail_for_s_set[s_idx]: continue
+                need_dispatch, assigned = self.assign(t_idx, s_idx, c_idx, need_dispatch)
+                st_assign[s_idx].add(t_idx)
+                ts_assign[t_idx].add(s_idx)
+                demand[t_idx, c_idx] -= assigned
+                if need_dispatch == 0: break
+        ############# avg diapatch to 95% ###################3
+        barrier = np.zeros(s_len, dtype=np.int32)
+        for (t_idx, c_idx), need_dispatch in self.max_idx_gen(demand):
+            if need_dispatch == 0: break
+            # dispatch to max
+            before_95_set = self.qos_avail_for_c_set[c_idx] - ts_assign[t_idx]
+            for s_idx in before_95_set:
+                can_dispatch = max(barrier[s_idx] - self.t_s_record[t_idx, s_idx], 0)
+                can_dispatch = min(need_dispatch, can_dispatch)
+                if can_dispatch:
+                    left, assigned = self.assign(t_idx, s_idx, c_idx, can_dispatch)
+                    demand[t_idx, c_idx] -= assigned
+                    need_dispatch -= assigned
+                    if need_dispatch == 0: break
+            if need_dispatch == 0: continue
+            # after dispatch will at 95%
+            max_can_dispatch = np.maximum(bandwidth - self.t_s_record[t_idx], 0)
+            before_95_list = list(before_95_set)
+            dispatch_to_each = self._avg_to_each(max_can_dispatch, need_dispatch, list(before_95_list))
+            for s_idx in before_95_list:
+                left, assigned = self.assign(t_idx, s_idx, c_idx, dispatch_to_each[s_idx])
+                if left: raise BaseException('not dispatch fully')
+                if assigned: barrier[s_idx] = self.t_s_record[t_idx, s_idx]
+        ################### normal dispatch #############################
+        # for (t_idx, c_idx), need_dispatch in self.max_idx_gen(demand):
+        #     if need_dispatch == 0: break
+        #     before_95_set = self.qos_avail_for_c_set[c_idx] - ts_assign[t_idx]
+        #     avg = need_dispatch // len(before_95_set)
+        #     remain = need_dispatch - avg * len(before_95_set)
+        #     for s_idx in before_95_set:
+        #         remain, assigned = self.assign(t_idx, s_idx, c_idx, avg + remain)
+        #         # client_demand -= assigned
+        #     if remain:
+        #         for s_idx in before_95_set:
+        #             remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
+        #             if remain == 0: break
+
+    def dispatch_again(self):
+        server_t_series = self.t_s_record
+        (t_idx_list, s_idx_list, res_at_95_list), barrier_list = self.get_batch_prev_95(server_t_series) # barrier is for each server
+        added_2_prev95_obj = {}
+        for t_idx, s_idx_orig, res_at_95 in zip(t_idx_list, s_idx_list, res_at_95_list):
+            client_series = self.record[t_idx, s_idx_orig]
+            for c_idx, res in enumerate(client_series):
+                if res > np.ceil(res_at_95 * 0.03):
+                    demand = np.ceil(self.record[t_idx, s_idx_orig, c_idx] * 0.4).astype('int32')
+                    s_idx_cand_list = self.qos_avail_for_c[c_idx]  # server candidate
+                    # move to prev 95%
+                    for s_idx_new in s_idx_cand_list:
                         if demand <= 0: break
+                        if (t_idx, s_idx_new) in added_2_prev95_obj:
+                            dispatch_minus = added_2_prev95_obj[(t_idx, s_idx_new)]
+                        else:
+                            dispatch_minus = 0
                         if s_idx_new == s_idx_orig: continue
-                        dispatch_minus = added_2_prev95_obj.get((t_idx, s_idx_new), 0)
-                        can_dispatch = self.dispatch_to_small(barrier_in_progress, t_idx, s_idx_new)
+                        can_dispatch = self.dispatch_to_small(barrier_list, t_idx, s_idx_new)
                         if can_dispatch > dispatch_minus:
                             assign_bw = min(demand, can_dispatch - dispatch_minus) 
                             demand -= assign_bw
                             self.assign(t_idx, s_idx_new, c_idx, assign_bw)
                             self.record[t_idx, s_idx_orig, c_idx] -= assign_bw
                             self.t_s_record[t_idx, s_idx_orig] -= assign_bw
-                            added_2_prev95_obj[(t_idx, s_idx_new)] += assign_bw
-                    # 2nd jump assign
-                    # if demand:
-                    #     for s_idx_new in self.s2s_bridge[s_idx_orig]:  # find a new server
-                    #         for c_idx_bridge, can_exchange in enumerate(self.record[t_idx, s_idx_new]):  # use a bridge c_idx
-                    #             if c_idx_bridge not in self.qos_avail_for_s[s_idx_orig]: continue
-                    #             for s_idx_final in self.qos_avail_for_c[c_idx_bridge]:
-                    #                 if c_idx not in self.qos_avail_for_s[s_idx_final]: continue
-                    #                 if demand <= 0: break
-                    #                 if s_idx_final == s_idx_orig: continue
-                    #                 dispatch_minus = added_2_prev95_obj.get((t_idx, s_idx_final), 0)
-                    #                 can_dispatch = self.dispatch_to_small(barrier_in_progress, t_idx, s_idx_final)
-                    #                 if can_dispatch > dispatch_minus:
-                    #                     assign_bw = min(demand, can_dispatch - dispatch_minus, can_exchange) 
-                    #                     demand -= assign_bw
-                    #                     # demand: orig to final
-                    #                     self.assign(t_idx, s_idx_final, c_idx, assign_bw)
-                    #                     self.record[t_idx, s_idx_orig, c_idx] -= assign_bw
-                    #                     self.t_s_record[t_idx, s_idx_orig] -= assign_bw
-                    #                     # exchange: new to orig
-                    #                     self.assign(t_idx, s_idx_orig, c_idx_bridge, assign_bw)
-                    #                     self.record[t_idx, s_idx_new, c_idx_bridge] -= assign_bw
-                    #                     self.t_s_record[t_idx, s_idx_new] -= assign_bw
-                    #                     added_2_prev95_obj[(t_idx, s_idx_final)] += assign_bw
-    
-    def dispatch_again_batch_for_multi_server(self, barrier_perc=0.8):
-        can_cut_t_idxs, values_barrier, values_95 = self._get_95_and_barrier_for_s(barrier_perc)
-        prior_idx = np.argsort(values_barrier - values_95)  # s_idx
-        added_2_prev95_obj = {}
-        for s_idx_orig in prior_idx:
-            res_at_95 = values_95[s_idx_orig]
-            can_move_threshould = res_at_95 * 0.03
-            for t_idx in can_cut_t_idxs[s_idx_orig]:
-                for c_idx, res in enumerate(self.record[t_idx, s_idx_orig]):
-                    if res > can_move_threshould: # ratio of client in this server > 3%
-                        demand = math.ceil(self.record[t_idx, s_idx_orig, c_idx] * 0.4)
-                        for s_idx_new in self.qos_avail_for_c[c_idx]:
-                            if demand <= 0: break
-                            if s_idx_new == s_idx_orig: continue
-                            # demand = self.try_fill_larger_than_95(t_idx, s_idx_orig, c_idx, demand)
-                            dispatch_minus = added_2_prev95_obj.get((t_idx, s_idx_new), 0)
-                            can_dispatch = self.dispatch_to_small(values_barrier, t_idx, s_idx_new)
-                            if can_dispatch > dispatch_minus:
-                                assign_bw = min(demand, can_dispatch - dispatch_minus) 
-                                demand -= assign_bw
-                                self.assign(t_idx, s_idx_new, c_idx, assign_bw)
-                                self.record[t_idx, s_idx_orig, c_idx] -= assign_bw
-                                self.t_s_record[t_idx, s_idx_orig] -= assign_bw
-                                added_2_prev95_obj[(t_idx, s_idx_new)] = can_dispatch
-        
+                            added_2_prev95_obj[(t_idx, s_idx_new)] = can_dispatch
+
     def get_batch_prev_95(self, arr: np.ndarray):
         value_at_95_list = []
         t_idx_95_list = []
@@ -318,204 +669,15 @@ class Solution():
             barrier_list[s_idx] = value_95[s_idx]
         return (out_t_idx_list, out_s_idx_list, out_res_at_95), barrier_list
 
-    def dispatch_again(self):
-        server_t_series = self.t_s_record
-        (t_idx_list, s_idx_list, res_at_95_list), barrier_list = self.get_batch_prev_95(server_t_series) # barrier is for each server
-        added_2_prev95_obj = {}
-        for t_idx, s_idx_orig, res_at_95 in zip(t_idx_list, s_idx_list, res_at_95_list):
-            client_series = self.record[t_idx, s_idx_orig]
-            for c_idx, res in enumerate(client_series):
-                if res > np.ceil(res_at_95 * 0.03):
-                    demand = np.ceil(self.record[t_idx, s_idx_orig, c_idx] * 0.4).astype('int32')
-                    s_idx_cand_list = self.qos_avail_for_c[c_idx]  # server candidate
-                    # move to prev 95%
-                    for s_idx_new in s_idx_cand_list:
-                        if demand <= 0: break
-                        if (t_idx, s_idx_new) in added_2_prev95_obj:
-                            dispatch_minus = added_2_prev95_obj[(t_idx, s_idx_new)]
-                        else:
-                            dispatch_minus = 0
-                        if s_idx_new == s_idx_orig: continue
-                        can_dispatch = self.dispatch_to_small(barrier_list, t_idx, s_idx_new)
-                        if can_dispatch > dispatch_minus:
-                            assign_bw = min(demand, can_dispatch - dispatch_minus) 
-                            demand -= assign_bw
-                            self.assign(t_idx, s_idx_new, c_idx, assign_bw)
-                            self.record[t_idx, s_idx_orig, c_idx] -= assign_bw
-                            self.t_s_record[t_idx, s_idx_orig] -= assign_bw
-                            added_2_prev95_obj[(t_idx, s_idx_new)] = can_dispatch
+    def dispatch_to_small(self, barrier_list: List[int], t_idx: int, s_idx: int):
+        barrier = barrier_list[s_idx]
+        # sum_at_here = self.record[t_idx, s_idx].sum()  
+        # return max(barrier - sum_at_here - 1, 0)
+        return max(barrier - self.t_s_record[t_idx, s_idx], 0)  # TODO: why -1?
     
-    def _restore_idx(self, idx, arr):
-        prev_sum = 0; new_idx = idx
-        new_sum = arr[:idx+1].sum()
-        while prev_sum != new_sum:
-            prev_sum = new_sum
-            new_idx = idx + new_sum
-            new_sum = arr[:new_idx+1].sum()
-        return new_idx
-
-    def dispatch_from_server_no_avg(self):
-        # DEL:
-        self.sum_at_5 = 0
-        s_full_filled = np.zeros(s_len, dtype=np.int32)
-        after_95_t_includ_s = defaultdict(set)
-        self.demand_after_5_dispatch = client_demand.copy()
-        qos_bool_c_s_orig = np.array((qos < qos_lim).T, order='F')
-        qos_bool_c_s = qos_bool_c_s_orig
-        s_idx_resotre_arr = np.zeros(s_len, dtype=np.int32)
-        s_idx_deleted = []
-        arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s_orig  # t * c  dot  c * s  -->  t * s
-        cnt = 0
-        st = time.time()
-        while cnt < self.higher_95_num * self.avail_s_count:
-            t_idx, s_idx = self.max_idx_of(arr_t_s)
-            if arr_t_s[t_idx, s_idx] == 0: break
-            s_idx = self._restore_idx(s_idx, s_idx_resotre_arr)
-            if s_full_filled[s_idx] == self.higher_95_num: 
-                s_idx_resotre_arr[s_idx] = 1
-                s_idx_deleted.append(s_idx)
-                qos_bool_c_s = np.delete(qos_bool_c_s_orig, s_idx_deleted, axis=1)
-                arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
-                continue
-            c_avail_set = self.qos_avail_for_s[s_idx]
-            if not c_avail_set: continue
-            after_95_t_includ_s[t_idx].add(s_idx)
-            self.after_95_t_4_s[s_idx].add(t_idx)
-            added = 0; left = 0
-            for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
-                if added == bandwidth[s_idx]: break
-                left, assigned = self.assign(t_idx, s_idx, c_idx, self.demand_after_5_dispatch[t_idx, c_idx])
-                self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
-                self.sum_at_5 += assigned  # DEL
-                added += assigned
-            arr_t_s[t_idx] = self.demand_after_5_dispatch[t_idx].dot(qos_bool_c_s)
-            s_full_filled[s_idx] += 1
-            cnt += 1
-        print(f'matrix used time: {time.time() - st}')
-        self.after_95_record = self.record.copy()
-        st = time.time()
-        for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(self.demand_after_5_dispatch):
-            s_avail_set = self.qos_avail_for_c[c_idx]
-            s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
-            remain = need_dispatch
-            for s_idx in s_avail_set:
-                remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
-                if remain == 0: break
-            if remain: 
-                raise BaseException('not fully dispatched')
-        print(f'remain used time: {time.time() - st}')
-
-    def dispatch_from_server_5_times_no_avg(self):
-        # DEL:
-        self.sum_at_5 = 0
-        s_full_filled = np.zeros(s_len, dtype=np.int32)
-        after_95_t_includ_s = defaultdict(set)
-        self.demand_after_5_dispatch = client_demand.copy()
-        qos_bool_c_s_orig = np.array((qos < qos_lim).T, order='F')
-        qos_bool_c_s = qos_bool_c_s_orig
-        s_idx_resotre_arr = np.zeros(s_len, dtype=np.int32)
-        s_idx_deleted = []
-        arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s_orig  # t * c  dot  c * s  -->  t * s
-        cnt = 0
-        st = time.time()
-        while cnt < self.higher_95_num * self.avail_s_count:
-            t_idx, s_idx = self.max_idx_of(arr_t_s)
-            if arr_t_s[t_idx, s_idx] == 0: break
-            t_idx_arr = np.argpartition(arr_t_s[:, s_idx], -5)[-5:]
-            s_idx = self._restore_idx(s_idx, s_idx_resotre_arr)
-            if s_full_filled[s_idx] == self.higher_95_num: 
-                s_idx_resotre_arr[s_idx] = 1
-                s_idx_deleted.append(s_idx)
-                qos_bool_c_s = np.delete(qos_bool_c_s_orig, s_idx_deleted, axis=1)
-                arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
-                continue
-            for t_idx in t_idx_arr:
-                c_avail_set = self.qos_avail_for_s[s_idx]
-                if not c_avail_set: continue
-                after_95_t_includ_s[t_idx].add(s_idx)
-                self.after_95_t_4_s[s_idx].add(t_idx)
-                added = 0; left = 0
-                for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
-                    if added == bandwidth[s_idx]: break
-                    left, assigned = self.assign(t_idx, s_idx, c_idx, self.demand_after_5_dispatch[t_idx, c_idx])
-                    self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
-                    self.sum_at_5 += assigned  # DEL
-                    added += assigned
-                arr_t_s[t_idx] = self.demand_after_5_dispatch[t_idx].dot(qos_bool_c_s)
-                s_full_filled[s_idx] += 1
-                cnt += 1
-        print(f'matrix used time: {time.time() - st}')
-        self.after_95_record = self.record.copy()
-        st = time.time()
-        for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(self.demand_after_5_dispatch):
-            s_avail_set = self.qos_avail_for_c[c_idx]
-            s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
-            remain = need_dispatch
-            for s_idx in s_avail_set:
-                remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
-                if remain == 0: break
-            if remain: 
-                raise BaseException('not fully dispatched')
-        print(f'remain used time: {time.time() - st}')
-
-    def dispatch_from_server_5_times(self):
-        # DEL:
-        self.sum_at_5 = 0
-        s_full_filled = np.zeros(s_len, dtype=np.int32)
-        after_95_t_includ_s = defaultdict(set)
-        self.demand_after_5_dispatch = client_demand.copy()
-        qos_bool_c_s_orig = np.array((qos < qos_lim).T, order='F')
-        qos_bool_c_s = qos_bool_c_s_orig
-        s_idx_resotre_arr = np.zeros(s_len, dtype=np.int32)
-        s_idx_deleted = []
-        arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s_orig  # t * c  dot  c * s  -->  t * s
-        cnt = 0
-        st = time.time()
-        while cnt < self.higher_95_num * self.avail_s_count:
-            t_idx, s_idx = self.max_idx_of(arr_t_s)
-            if arr_t_s[t_idx, s_idx] == 0: break
-            t_idx_arr = np.argpartition(arr_t_s[:, s_idx], -5)[-5:]
-            s_idx = self._restore_idx(s_idx, s_idx_resotre_arr)
-            if s_full_filled[s_idx] == self.higher_95_num: 
-                s_idx_resotre_arr[s_idx] = 1
-                s_idx_deleted.append(s_idx)
-                qos_bool_c_s = np.delete(qos_bool_c_s_orig, s_idx_deleted, axis=1)
-                arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
-                continue
-            for t_idx in t_idx_arr:
-                c_avail_set = self.qos_avail_for_s[s_idx]
-                if not c_avail_set: continue
-                after_95_t_includ_s[t_idx].add(s_idx)
-                self.after_95_t_4_s[s_idx].add(t_idx)
-                added = 0; left = 0
-                for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
-                    if added == bandwidth[s_idx]: break
-                    left, assigned = self.assign(t_idx, s_idx, c_idx, self.demand_after_5_dispatch[t_idx, c_idx])
-                    self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
-                    self.sum_at_5 += assigned  # DEL
-                    added += assigned
-                arr_t_s[t_idx] = self.demand_after_5_dispatch[t_idx].dot(qos_bool_c_s)
-                s_full_filled[s_idx] += 1
-                cnt += 1
-        print(f'matrix used time: {time.time() - st}')
-        self.after_95_record = self.record.copy()
-        st = time.time()
-        for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(self.demand_after_5_dispatch):
-            s_avail_set = self.qos_avail_for_c[c_idx]
-            s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
-            avg = need_dispatch // len(s_avail_set)
-            remain = need_dispatch - avg * len(s_avail_set)
-            for s_idx in s_avail_set:
-                remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
-            if remain: 
-                for s_idx in s_avail_set:
-                    remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
-            if remain: 
-                raise BaseException('not fully dispatched')
-        print(f'remain used time: {time.time() - st}')
-
     def dispatch_from_server(self):
         # DEL:
+        ts_assign = [ set() for _ in range(t_len)]
         self.sum_at_5 = 0
         s_full_filled = np.zeros(s_len, dtype=np.int32)
         after_95_t_includ_s = defaultdict(set)
@@ -545,6 +707,8 @@ class Solution():
             for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
                 if added == bandwidth[s_idx]: break
                 left, assigned = self.assign(t_idx, s_idx, c_idx, self.demand_after_5_dispatch[t_idx, c_idx])
+                if assigned:
+                    ts_assign[t_idx].add(s_idx)
                 self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
                 self.sum_at_5 += assigned  # DEL
                 added += assigned
@@ -552,374 +716,427 @@ class Solution():
             s_full_filled[s_idx] += 1
             cnt += 1
         print(f'matrix used time: {time.time() - st}')
-        self.after_95_record = self.record.copy()
-        st = time.time()
-        for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(self.demand_after_5_dispatch):
-            s_avail_set = self.qos_avail_for_c[c_idx]
-            s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
-            avg = need_dispatch // len(s_avail_set)
-            remain = need_dispatch - avg * len(s_avail_set)
-            for s_idx in s_avail_set:
-                remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
-            if remain: 
-                for s_idx in s_avail_set:
-                    remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
-            if remain: 
-                raise BaseException('not fully dispatched')
-        print(f'remain used time: {time.time() - st}')
-
-    def _max_idx_4_row(self, arr: np.ndarray):
-        idx = np.argmax(arr, axis=1)
-        return [ self._restore_idx(sel_idx, self.removed_t_idx_4_s[i]) for i, sel_idx in enumerate(idx)]
-    
-    def _del_col_4_arr(self, arr, del_arr):
-        row_cnt = arr.shape[0]
-        del_arr_here = del_arr.reshape(row_cnt, -1)
-        col_cnt = arr.shape[1] - del_arr_here.reshape(row_cnt, -1).shape[1]
-        out_arr = np.empty((row_cnt, col_cnt), dtype=np.int32)
-        for r_idx in range(row_cnt):
-            real_idx = [ self._restore_idx(sel_idx, self.removed_t_idx_4_s[i]) for i, sel_idx in enumerate(del_arr_here)]
-            out_arr[r_idx] = np.delete(arr[r_idx], real_idx)
-            pass
-
-
-    def dispatch_again_3_block(self):
-        # self.removed_t_idx_4_s = np.zeros((s_len, t_len), dtype=np.int32)
-        self.removed_t_s = np.zeros((t_len, s_len), dtype=np.int32)
-        for s_idx, t_set in enumerate(self.after_95_t_4_s):
-            for t_idx in t_set:
-                self.removed_t_s[t_idx, s_idx] = 1
-                # self.removed_t_idx_4_s[s_idx, t_idx] = 1
-        max_t_idx_active_4_s = np.argmax(np.ma.array(self.t_s_record, self.removed_t_s), axis=0)  # t for each s
-        max_value = self.t_s_record[max_t_idx_active_4_s, np.arange(s_len)]
-        tmp_removed_t_s = self.removed_t_s.copy()
-        for s_idx, t_idx in enumerate(max_t_idx_active_4_s):
-            tmp_removed_t_s[t_idx, s_idx] = 1
-        barrier_idx = np.argmax(np.ma.array(self.t_s_record, tmp_removed_t_s), axis=0)
-        barrier_value = self.t_s_record[barrier_idx, np.arange(s_len)]
-        diff = max_value - barrier_value
-        for s_idx, diff_value in enumerate(diff):
-            added_2_prev95_obj = defaultdict(int)  # t,s -> added_value
-            active_t = barrier_idx[s_idx]
-            
-
-            local_record = []  # t, s
-            local_added_2_prev_95_obj = defaultdict() # 
-            pass
-
-
-        active_t_for_server = self._max_idx_4_row()
-        removed_t_for_server = self.after_95_t_4_s
-        active_t_for_server = []
-        to_be_added_t_for_server = []
-        for s_idx in range(s_len):
-            
-            pass
-
-
-    def dispatch_again_3_block(self):
-        self.removed_t_idx_4_s = [ [] for _ in range(s_len) ]
-        for s_idx, t_set in enumerate(self.after_95_t_4_s):
-            for t_idx in t_set:
-                self.removed_t_idx_4_s[s_idx].append(t_idx)
-        active_t_4_s = [ [] for _ in range(s_len) ]
-        
-    def convert2graph_old(self):
-        self.graph = Graph()
-        # define vertex
-        for t in range(t_len+1):  # idx in t_len is gather node for s (used to limit bandwidth)
-            self.graph.add([ f'{t}s{s}' for s in range(s_len) ])
-            self.graph.add([ f'{t}c{c}' for c in range(c_len) ])
-            self.graph.add([ f'{t}e{c}' for c in range(c_len) ])
-        self.graph.add(['s', 't'])
-        self.values_95_for_s = np.argpartition(self.t_s_record, self.idx_95, axis=0)[self.idx_95]
-        for t in range(t_len):
-            for s in range(s_len):
-                self.graph.add_edge('s', f'{t_len}s{s}', self.values_95_for_s[s])
-                self.graph.add_edge(f'{t_len}s{s}', f'{t}s{s}', self.values_95_for_s[s])
-            for c in range(c_len):
-                self.graph.add_edge(f'{t}c{c}', f'{t}e{c}', self.demand_after_5_dispatch[t, c]) # e means end
-                self.graph.add_edge(f'{t}e{c}', 't', client_demand[t, c])
-        for s_idx, t_set in enumerate(self.after_95_t_4_s):
-            for t_idx in t_set:
-                self.graph.add_edge(f'{t_len}s{s_idx}', f'{t_idx}s{s_idx}', 0)
-        for t in range(t_len):
-            for s in range(s_len):
-                c_list = self.qos_avail_for_s[s]
-                for c in c_list:
-                    self.graph.add_edge(f'{t}s{s}', f'{t}c{c}', min(self.demand_after_5_dispatch[t, c], bandwidth[s]))
-
-    def _get_demand_out(self, g: Graph):
-        c_demand = np.zeros(c_len, dtype=np.int32)
-        for c in range(c_len):
-            c_demand[c] = g.get_flow(f'c{c}', 't')
-        return c_demand
-    
-    def iterate_s_cap(self):
-        print(f'before iterate s: {self.values_95_for_s.sum()} \n', sorted(self.values_95_for_s, reverse=True))
-        arg = np.argsort(self.values_95_for_s)
-        not_reduced_list = []
-        for s_idx in arg:
-            value = self.values_95_for_s[s_idx]
-            # if cnt == 20: break
-            # cnt += 1
-            if value == 0: continue
-            test_value = value
-        # for s_idx, value in enumerate(self.values_95_for_s):
-            flow_diff_max = 0
-            test_value = test_value // 2
-            for t_idx, g in enumerate(self.graph4t):
-                g.add_edge('s', f's{s_idx}', test_value)
-                g.calc_max_flow('s', 't')
-                d_out = self._get_demand_out(g)
-                flow_diff = self.demand_after_5_dispatch[t_idx].sum() - d_out.sum()
-                flow_diff_max = max(flow_diff_max, flow_diff)
-            # re-define flow diff
-            # flow_sum = np.array([ g.max_flow for g in self.graph4t ]).sum()
-            # diff = self.flow_sum - flow_sum
-            reduced = value - test_value - flow_diff_max
-            if flow_diff_max == 0:
-                not_reduced_list.append(s_idx)
-            print(f'server index: {s_idx} \t prev: {value} \t test value: {test_value} \t flow diff: {flow_diff_max} \t reduced: {reduced}')
-            # if test_value == 0: break
-            # if diff:
-                # self.values_95_for_s[s_idx] = test_value + diff
-                # for g in self.graph4t:
-                #     g.add_edge('s', f's{s_idx}', test_value + diff)
-            if flow_diff_max:
-                self.values_95_for_s[s_idx] = test_value + flow_diff_max
-                for g in self.graph4t:
-                    g.add_edge('s', f's{s_idx}', test_value + flow_diff_max)
-        # second time reduce in network flow
-        print('start 2nd time network flow reduce')
-        print('iterate list: ', not_reduced_list)
-        for s_idx in not_reduced_list:
-            flow_diff_max = 0
-            test_value = 0
-            for t_idx, g in enumerate(self.graph4t):
-                g.add_edge('s', f's{s_idx}', test_value)
-                g.calc_max_flow('s', 't')
-                d_out = self._get_demand_out(g)
-                flow_diff = self.demand_after_5_dispatch[t_idx].sum() - d_out.sum()
-                flow_diff_max = max(flow_diff_max, flow_diff)
-            # re-define flow diff
-            # flow_sum = np.array([ g.max_flow for g in self.graph4t ]).sum()
-            # diff = self.flow_sum - flow_sum
-            reduced = value - test_value - flow_diff_max
-            if flow_diff_max == 0:
-                not_reduced_list.append(s_idx)
-            print(f'server index: {s_idx} prev: {value} \t test value: {test_value} \t flow diff: {flow_diff_max} \t reduced: {reduced}')
-            # if test_value == 0: break
-            # if diff:
-                # self.values_95_for_s[s_idx] = test_value + diff
-                # for g in self.graph4t:
-                #     g.add_edge('s', f's{s_idx}', test_value + diff)
-            if flow_diff_max:
-                self.values_95_for_s[s_idx] = test_value + flow_diff_max
-                for g in self.graph4t:
-                    g.add_edge('s', f's{s_idx}', test_value + flow_diff_max)
-            
-            pass
-        print(f'after iterate s: {self.values_95_for_s.sum()} \n', sorted(self.values_95_for_s, reverse=True))
-        for g in self.graph4t:
-            g.calc_max_flow('s', 't')
-        flow_sum = np.array(self.max_flow_list).sum()
-        print(f'final flow sum: {flow_sum}')
-        
-    def read_out_network(self):
-        self.record = self.after_95_record
-        for t_idx, g in enumerate(self.graph4t):
-            for s_idx in range(s_len):
-                for c_idx in range(c_len):
-                    v = g.get_flow(f's{s_idx}', f'c{c_idx}')
-                    self.record[t_idx, s_idx, c_idx] += v
-        self.t_s_record = self.record.sum(axis=-1)
-
-    def construct_all_graph(self):
-        t_idx_95 = np.argpartition(self.t_s_record, self.idx_95, axis=0)[self.idx_95]
-        self.values_95_for_s = self.t_s_record[t_idx_95, np.arange(s_len)]
-        # max_idx = self.higher_95_num + 1
-        # self.values_95_for_s = np.zeros(s_len, dtype=np.int32)
-        # for s_idx, t_series in enumerate(self.t_s_record.T):
-        #     # idx = np.argpartition(t_series, -max_idx)[-max_idx]
-        #     t_series.sort()
-        #     self.values_95_for_s[s_idx] = t_series[self.idx_95]
-        #     # self.values_95_for_s[s_idx] = t_series[idx]
-        print(f'95% sum at graph: {np.sum(self.values_95_for_s)}')
-        # self.values_95_for_s = self.t_s_record[idxs, np.arange(s_len)]
-        self.graph4t: List[Graph] = [ self.construct_graph(t) for t in range(t_len) ]
-        for t in range(t_len):
-            # self.graph4t[t].max_capacity_augment('s', 't')
-            self.graph4t[t].calc_max_flow('s', 't')
-        self.max_flow_list = [ g.max_flow for g in self.graph4t ]
-        self.flow_sum = np.array(self.max_flow_list).sum()
-        print(f'flow sum: {np.array(self.max_flow_list).sum()}')
-        print(f'separate flow: \n {sorted(self.max_flow_list, reverse=True)}')
-        self.after_95_t_4_s
-    
-    def construct_graph(self, t) -> Graph:  # when t = t_len is gather point
-        graph = Graph()
-        graph.add([ f'b{s}' for s in range(s_len) ])  # begin
-        graph.add([ f's{s}' for s in range(s_len) ])  # server
-        graph.add([ f'c{c}' for c in range(c_len) ])  # client
-        graph.add([ f'e{c}' for c in range(c_len) ])  # end
-        graph.add(['s', 't'])
-        for s in range(s_len):
-            graph.add_edge('s', f's{s}', self.values_95_for_s[s])
-        for s, t_set in enumerate(self.after_95_t_4_s):
-            # if t in t_set: graph.add_edge(f's', f's{s}', bandwidth[s])
-            # if t in t_set: graph.add_edge(f's', f's{s}', bandwidth[s]-self.t_s_record[t, s])
-            if t in t_set: graph.add_edge(f's', f's{s}', 0)
-        for s in range(s_len):
-            for c in self.qos_avail_for_s[s]:
-                graph.add_edge(f's{s}', f'c{c}', min(self.demand_after_5_dispatch[t, c], bandwidth[s]))
-        for c in range(c_len):
-            # graph.add_edge(f'c{c}', f't', client_demand[t, c])
-            graph.add_edge(f'c{c}', f't', self.demand_after_5_dispatch[t, c])
-        return graph
-
-    def max_flow_except_5(self):
-        return self.graph.max_flow
-    
-    def dispatch(self):
-        self.server_5_t_idx = [ set() for _ in range(len(sname)) ]
-        self.server_5_value = [ defaultdict(int) for _ in range(len(sname)) ]
-        for (t_idx, c_idx), demand in self.get_max_idx_gen(client_demand):
-            s_list = list(self.qos_avail_for_c[c_idx])
-            occu_5_num = []
-            occu_5_num = [ len(self.server_5_t_idx[s_idx])-(t_idx in self.server_5_t_idx[s_idx]) for s_idx in s_list ]
-            arg = np.argsort(np.array(occu_5_num))
-            s_arr = np.array(s_list)[arg]
-            for idx, s_idx in enumerate(s_arr):
-                if t_idx in self.server_5_t_idx[s_idx]: # in server top 5, put all the resources into
-                    if self.server_5_value[s_idx][t_idx] == bandwidth[s_idx]: # server is full at current time, next loop
-                        continue
-                    else: # server is not full, try to fill it to full
-                        demand, assigned = self.assign(t_idx, s_idx, c_idx, demand)
-                        self.server_5_value[s_idx][t_idx] += assigned
-                        if demand == 0: break
-                elif len(self.server_5_t_idx[s_idx]) != self.higher_95_num: # not in server top 5, top 5 is not full, fill a blank
-                    if self.server_5_value[s_idx][t_idx] == bandwidth[s_idx]: # server is full at current time, next loop
-                        continue
-                    self.server_5_t_idx[s_idx].add(t_idx)
-                    demand, assigned = self.assign(t_idx, s_idx, c_idx, demand)
-                    self.server_5_value[s_idx][t_idx] += assigned
-                    if demand == 0: break
-                else:  # not in top 5, top 5 is full, put average in all the avail
-                    avg_s_arr = s_arr[idx:]
-                    avg_dispatch = math.floor(demand / len(avg_s_arr))
-                    remain = demand - avg_dispatch * len(avg_s_arr)
-                    for ss_idx in avg_s_arr:
-                        remain, assigned = self.assign(t_idx, ss_idx, c_idx, avg_dispatch + remain)
-                        if remain == 0: break
-                    if remain: raise BaseException("dispatch fail, has remain")
-                    demand = 0
-                    break
-            if demand:
-                raise BaseException("dispatch fail")
-
-    def dispatch_from_server_after_95_barrier(self):
-        self.sum_at_5 = 0
-        s_full_filled = np.zeros(s_len, dtype=np.int32)
-        after_95_t_includ_s = defaultdict(set)
-        self.demand_after_5_dispatch = client_demand.copy()
-        qos_bool_c_s_orig = np.array((qos < qos_lim).T, order='F')
-        qos_bool_c_s = qos_bool_c_s_orig
-        s_idx_resotre_arr = np.zeros(s_len, dtype=np.int32)
-        s_idx_deleted = []
-        arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s_orig  # t * c  dot  c * s  -->  t * s
-        cnt = 0
-        st = time.time()
-        while cnt < self.higher_95_num * self.avail_s_count:
-            t_idx, s_idx = self.max_idx_of(arr_t_s)
-            if arr_t_s[t_idx, s_idx] == 0: break
-            s_idx = self._restore_idx(s_idx, s_idx_resotre_arr)
-            if s_full_filled[s_idx] == self.higher_95_num: 
-                s_idx_resotre_arr[s_idx] = 1
-                s_idx_deleted.append(s_idx)
-                qos_bool_c_s = np.delete(qos_bool_c_s_orig, s_idx_deleted, axis=1)
-                arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
-                continue
-            c_avail_set = self.qos_avail_for_s[s_idx]
-            if not c_avail_set: continue
-            after_95_t_includ_s[t_idx].add(s_idx)
-            self.after_95_t_4_s[s_idx].add(t_idx)
-            added = 0; left = 0
-            for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
-                if added == bandwidth[s_idx]: break
-                left, assigned = self.assign(t_idx, s_idx, c_idx, self.demand_after_5_dispatch[t_idx, c_idx])
-                self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
-                self.sum_at_5 += assigned  # DEL
-                added += assigned
-            arr_t_s[t_idx] = self.demand_after_5_dispatch[t_idx].dot(qos_bool_c_s)
-            s_full_filled[s_idx] += 1
-            cnt += 1
-        print(f'matrix used time: {time.time() - st}')
-        self.after_95_record = self.record.copy()
-        st = time.time()
+        ############# normal dispatch ##################
+        # self.after_95_record = self.record.copy()
+        # st = time.time()
+        # for (t_idx, c_idx), need_dispatch in self.max_idx_gen(self.demand_after_5_dispatch):
+        #     s_avail_set = self.qos_avail_for_c_set[c_idx]
+        #     s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
+        #     avg = need_dispatch // len(s_avail_set)
+        #     remain = need_dispatch - avg * len(s_avail_set)
+        #     for s_idx in s_avail_set:
+        #         remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
+        #     if remain: 
+        #         for s_idx in s_avail_set:
+        #             remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
+        #     if remain: 
+        #         raise BaseException('not fully dispatched')
+        # print(f'remain used time: {time.time() - st}')
+        ############### avg dispatch #####################
         barrier = np.zeros(s_len, dtype=np.int32)
-        for (t_idx, c_idx), need_dispatch in self.get_max_idx_gen(self.demand_after_5_dispatch):
-            s_avail_set = self.qos_avail_for_c[c_idx]
-            s_avail_list = list(s_avail_set - after_95_t_includ_s[t_idx])
-
+        # cand_idx = list(product(range(t_len), range(c_len)))
+        # shuffle(cand_idx)
+        # for t_idx, c_idx in cand_idx:
+        #     need_dispatch = self.demand_after_5_dispatch[t_idx, c_idx]
+            # if need_dispatch == 0: continue
+        for (t_idx, c_idx), need_dispatch in self.max_idx_gen(self.demand_after_5_dispatch):
+            if need_dispatch == 0: break
+        # for (t_idx, c_idx) in list(product(range(t_len), range(c_len))):
+        #     need_dispatch = self.demand_after_5_dispatch[t_idx, c_idx]
+        #     if need_dispatch == 0: continue
             # dispatch to max
-            for s_idx in s_avail_list:
-                can_dispatch = max(0, barrier[s_idx] - self.t_s_record[t_idx, s_idx])
+            before_95_set = self.qos_avail_for_c_set[c_idx] - ts_assign[t_idx]
+            for s_idx in before_95_set:
+                can_dispatch = max(barrier[s_idx] - self.t_s_record[t_idx, s_idx], 0)
+                can_dispatch = min(need_dispatch, can_dispatch)
                 if can_dispatch:
-                    left, assigned = self.assign(t_idx, s_idx, c_idx, min(need_dispatch, can_dispatch))
+                    left, assigned = self.assign(t_idx, s_idx, c_idx, can_dispatch)
+                    self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
                     need_dispatch -= assigned
                     if need_dispatch == 0: break
-
+            if need_dispatch == 0: continue
             # after dispatch will at 95%
-            max_can_dispatch = bandwidth[s_avail_list] - self.t_s_record[t_idx, s_avail_list]
-            avg = need_dispatch // len(s_avail_list)
-            dispatch_to_each = np.ones(len(s_avail_list), dtype=np.int32) * avg
-            remain = need_dispatch - avg * len(s_avail_list)
-            # dispatch_to_each[: remain] += 1
-            can_not_dispatch = dispatch_to_each > max_can_dispatch
-            can_not_dispatch_value = np.maximum((dispatch_to_each - max_can_dispatch), 0).sum()
-            remain += can_not_dispatch_value
-            remain_can_dispatch_num = (len(s_avail_list) - can_not_dispatch.sum())
-            avg_for_remain = remain // remain_can_dispatch_num
-            remain_for_remain = remain - avg_for_remain * remain_can_dispatch_num
-            prev_remain = 0
-            for i, s_idx in enumerate(s_avail_list):
-                dispatch_value = dispatch_to_each[i] + prev_remain
-                if can_not_dispatch[i] != True:
-                    dispatch_value += avg_for_remain
-                if remain_for_remain and (can_not_dispatch[i] != True):
-                    dispatch_value += 1
-                    remain_for_remain -= 1
-                remain, assigned = self.assign(t_idx, s_idx, c_idx, dispatch_value)
-                # if remain: raise BaseException(r'not fully dispatched before 95% at a server')
-                prev_remain = remain
-                barrier[s_idx] = max(self.t_s_record[t_idx, s_idx], barrier[s_idx])
+            max_can_dispatch = np.maximum(bandwidth - self.t_s_record[t_idx], 0)
+            before_95_list = list(before_95_set)
+            dispatch_to_each = self._avg_to_each(max_can_dispatch, need_dispatch, list(before_95_list))
+            for s_idx in before_95_list:
+                left, assigned = self.assign(t_idx, s_idx, c_idx, dispatch_to_each[s_idx])
+                self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                if left: raise BaseException('not dispatch fully')
+                if assigned: barrier[s_idx] = self.t_s_record[t_idx, s_idx]
 
-            # for s_idx in s_avail_set:
-            #     remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
-            # if remain: 
-            #     for s_idx in s_avail_set:
-            #         remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
-            # if remain: 
-            #     raise BaseException('not fully dispatched')
+    def dispatch_from_server_2(self):
+        # DEL:
+        ts_assign = [ set() for _ in range(t_len)]
+        self.sum_at_5 = 0
+        s_full_filled = np.zeros(s_len, dtype=np.int32)
+        after_95_t_includ_s = defaultdict(set)
+        self.demand_after_5_dispatch = client_demand.copy()
+        qos_bool_c_s_orig = np.array((qos < qos_lim).T, order='F')
+        qos_bool_c_s = qos_bool_c_s_orig
+        s_idx_resotre_arr = np.zeros(s_len, dtype=np.int32)
+        s_idx_deleted = []
+        can_dispatch_num = deepcopy(self.qos_avail_num_for_s)
+        for s, v in enumerate(can_dispatch_num):
+            if v == 0:
+                can_dispatch_num[s] = 1
+        arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s_orig / can_dispatch_num   # t * c  dot  c * s  -->  t * s
+        cnt = 0
+        st = time.time()
+        while cnt < self.higher_95_num * self.avail_s_count:
+            t_idx, s_idx = self.max_idx_of(arr_t_s)
+            if arr_t_s[t_idx, s_idx] == 0: break
+            s_idx = self._restore_idx(s_idx, s_idx_resotre_arr)
+            if s_full_filled[s_idx] == self.higher_95_num: 
+                s_idx_resotre_arr[s_idx] = 1
+                s_idx_deleted.append(s_idx)
+                qos_bool_c_s = np.delete(qos_bool_c_s_orig, s_idx_deleted, axis=1)
+                can_dispatch_to_servver_num = [ 1 for _ in range(s_len) ]
+                for c_idx, c_demand in enumerate(self.demand_after_5_dispatch[t_idx]):
+                    if c_demand: 
+                        for s_idx in self.qos_avail_for_c[c_idx]:
+                            can_dispatch_to_servver_num[s_idx] += 1
+                can_dispatch_to_servver_num = np.delete(can_dispatch_to_servver_num, s_idx_deleted)
+                arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s / can_dispatch_to_servver_num  # t * c  dot  c * s  -->  t * s
+                continue
+            c_avail_set = self.qos_avail_for_s[s_idx]
+            if not c_avail_set: continue
+            after_95_t_includ_s[t_idx].add(s_idx)
+            self.after_95_t_4_s[s_idx].add(t_idx)
+            added = 0; left = 0
+            for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
+                if added == bandwidth[s_idx]: break
+                left, assigned = self.assign(t_idx, s_idx, c_idx, self.demand_after_5_dispatch[t_idx, c_idx])
+                if assigned:
+                    ts_assign[t_idx].add(s_idx)
+                self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                self.sum_at_5 += assigned  # DEL
+                added += assigned
+            can_dispatch_to_servver_num = [ 1 for _ in range(s_len) ]
+            for c_idx, c_demand in enumerate(self.demand_after_5_dispatch[t_idx]):
+                if c_demand: 
+                    for s_idx in self.qos_avail_for_c[c_idx]:
+                        can_dispatch_to_servver_num[s_idx] += 1
+            can_dispatch_to_servver_num = np.delete(can_dispatch_to_servver_num, s_idx_deleted)
+            arr_t_s[t_idx] = self.demand_after_5_dispatch[t_idx].dot(qos_bool_c_s) / can_dispatch_to_servver_num
+            s_full_filled[s_idx] += 1
+            cnt += 1
+        print(f'matrix used time: {time.time() - st}')
+        ############# normal dispatch ##################
+        # self.after_95_record = self.record.copy()
+        # st = time.time()
+        # for (t_idx, c_idx), need_dispatch in self.max_idx_gen(self.demand_after_5_dispatch):
+        #     s_avail_set = self.qos_avail_for_c_set[c_idx]
+        #     s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
+        #     avg = need_dispatch // len(s_avail_set)
+        #     remain = need_dispatch - avg * len(s_avail_set)
+        #     for s_idx in s_avail_set:
+        #         remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
+        #     if remain: 
+        #         for s_idx in s_avail_set:
+        #             remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
+        #     if remain: 
+        #         raise BaseException('not fully dispatched')
+        # print(f'remain used time: {time.time() - st}')
+        ############### avg dispatch #####################
+        barrier = np.zeros(s_len, dtype=np.int32)
+        # cand_idx = list(product(range(t_len), range(c_len)))
+        # shuffle(cand_idx)
+        # for t_idx, c_idx in cand_idx:
+        #     need_dispatch = self.demand_after_5_dispatch[t_idx, c_idx]
+            # if need_dispatch == 0: continue
+        for (t_idx, c_idx), need_dispatch in self.max_idx_gen(self.demand_after_5_dispatch):
+            if need_dispatch == 0: break
+            # dispatch to max
+            before_95_set = self.qos_avail_for_c_set[c_idx] - ts_assign[t_idx]
+            for s_idx in before_95_set:
+                can_dispatch = max(barrier[s_idx] - self.t_s_record[t_idx, s_idx], 0)
+                can_dispatch = min(need_dispatch, can_dispatch)
+                if can_dispatch:
+                    left, assigned = self.assign(t_idx, s_idx, c_idx, can_dispatch)
+                    self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                    need_dispatch -= assigned
+                    if need_dispatch == 0: break
+            if need_dispatch == 0: continue
+            # after dispatch will at 95%
+            max_can_dispatch = np.maximum(bandwidth - self.t_s_record[t_idx], 0)
+            before_95_list = list(before_95_set)
+            dispatch_to_each = self._avg_to_each(max_can_dispatch, need_dispatch, list(before_95_list))
+            for s_idx in before_95_list:
+                left, assigned = self.assign(t_idx, s_idx, c_idx, dispatch_to_each[s_idx])
+                if left: raise BaseException('not dispatch fully')
+                if assigned: barrier[s_idx] = self.t_s_record[t_idx, s_idx]
+
+    def dispatch_from_server_3(self):
+        # DEL:
+        ts_assign = [ set() for _ in range(t_len)]
+        self.sum_at_5 = 0
+        s_full_filled = np.zeros(s_len, dtype=np.int32)
+        after_95_t_includ_s = defaultdict(set)
+        self.demand_after_5_dispatch = client_demand.copy()
+        qos_bool_c_s_orig = np.array((qos < qos_lim).T, order='F')
+        qos_bool_c_s = qos_bool_c_s_orig
+        s_idx_resotre_arr = np.zeros(s_len, dtype=np.int32)
+        s_idx_deleted = []
+        arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s_orig  # t * c  dot  c * s  -->  t * s
+        cnt = 0
+        st = time.time()
+        while cnt < self.higher_95_num * self.avail_s_count:
+            t_idx, s_idx = self.max_idx_of(arr_t_s)
+            if arr_t_s[t_idx, s_idx] == 0: break
+            s_idx = self._restore_idx(s_idx, s_idx_resotre_arr)
+            if s_full_filled[s_idx] == self.higher_95_num: 
+                s_idx_resotre_arr[s_idx] = 1
+                s_idx_deleted.append(s_idx)
+                qos_bool_c_s = np.delete(qos_bool_c_s_orig, s_idx_deleted, axis=1)
+                arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
+                continue
+            c_avail_set = self.qos_avail_for_s[s_idx]
+            if not c_avail_set: continue
+            after_95_t_includ_s[t_idx].add(s_idx)
+            self.after_95_t_4_s[s_idx].add(t_idx)
+            added = 0; left = 0
+            for c_idx in self.qos_avail_for_s[s_idx]: # TODO: select c_idx scheme
+                if added == bandwidth[s_idx]: break
+                left, assigned = self.assign(t_idx, s_idx, c_idx, self.demand_after_5_dispatch[t_idx, c_idx])
+                if assigned:
+                    ts_assign[t_idx].add(s_idx)
+                self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                self.sum_at_5 += assigned  # DEL
+                added += assigned
+            arr_t_s[t_idx] = self.demand_after_5_dispatch[t_idx].dot(qos_bool_c_s)
+            s_full_filled[s_idx] += 1
+            cnt += 1
+        print(f'matrix used time: {time.time() - st}')
+        ############# normal dispatch ##################
+        # self.after_95_record = self.record.copy()
+        # st = time.time()
+        # for (t_idx, c_idx), need_dispatch in self.max_idx_gen(self.demand_after_5_dispatch):
+        #     s_avail_set = self.qos_avail_for_c_set[c_idx]
+        #     s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
+        #     avg = need_dispatch // len(s_avail_set)
+        #     remain = need_dispatch - avg * len(s_avail_set)
+        #     for s_idx in s_avail_set:
+        #         remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
+        #     if remain: 
+        #         for s_idx in s_avail_set:
+        #             remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
+        #     if remain: 
+        #         raise BaseException('not fully dispatched')
+        # print(f'remain used time: {time.time() - st}')
+        ############### avg dispatch #####################
+        barrier = np.zeros(s_len, dtype=np.int32)
+        # cand_idx = list(product(range(t_len), range(c_len)))
+        # shuffle(cand_idx)
+        # for t_idx, c_idx in cand_idx:
+        #     need_dispatch = self.demand_after_5_dispatch[t_idx, c_idx]
+            # if need_dispatch == 0: continue
+        # for (t_idx, c_idx), need_dispatch in self.max_idx_gen(self.demand_after_5_dispatch):
+        #     if need_dispatch == 0: break
+        t_demand = self.demand_after_5_dispatch.sum(axis=-1)
+        arg = np.argsort(-t_demand)
+        # for t_idx in arg:
+        for t_idx in range(t_len):
+            for c_idx in range(c_len):
+                need_dispatch = self.demand_after_5_dispatch[t_idx, c_idx]
+                if need_dispatch:
+                    # dispatch to max
+                    before_95_set = self.qos_avail_for_c_set[c_idx] - ts_assign[t_idx]
+                    for s_idx in before_95_set:
+                        can_dispatch = max(barrier[s_idx] - self.t_s_record[t_idx, s_idx], 0)
+                        can_dispatch = min(need_dispatch, can_dispatch)
+                        if can_dispatch:
+                            left, assigned = self.assign(t_idx, s_idx, c_idx, can_dispatch)
+                            self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                            need_dispatch -= assigned
+                            if need_dispatch == 0: break
+            for c_idx in range(c_len):
+                need_dispatch = self.demand_after_5_dispatch[t_idx, c_idx]
+                if need_dispatch == 0: continue
+                # after dispatch will at 95%
+                max_can_dispatch = np.maximum(bandwidth - self.t_s_record[t_idx], 0)
+                before_95_set = self.qos_avail_for_c_set[c_idx] - ts_assign[t_idx]
+                before_95_list = list(before_95_set)
+                dispatch_to_each = self._avg_to_each(max_can_dispatch, need_dispatch, list(before_95_list))
+                for s_idx in before_95_list:
+                    left, assigned = self.assign(t_idx, s_idx, c_idx, dispatch_to_each[s_idx])
+                    self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                    if left: raise BaseException('not dispatch fully')
+                    if assigned: barrier[s_idx] = self.t_s_record[t_idx, s_idx]
+    
+    def dispatch_from_server_5time(self):
+        ts_assign = [ set() for _ in range(t_len)]
+        st_assign = [ set() for _ in range(s_len)]
+        self.sum_at_5 = 0
+        s_full_filled = np.zeros(s_len, dtype=np.int32)
+        after_95_t_includ_s = defaultdict(set)
+        self.demand_after_5_dispatch = client_demand.copy()
+        qos_bool_c_s_orig = np.array((qos < qos_lim).T, order='F')
+        qos_bool_c_s = qos_bool_c_s_orig
+        s_idx_resotre_arr = np.zeros(s_len, dtype=np.int32)
+        s_idx_deleted = []
+        arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s_orig  # t * c  dot  c * s  -->  t * s
+        cnt = 0
+        st = time.time()
+        ############ dispatch to 5% ######################
+        cnt = 0
+        for _ in range(s_len):
+            cnt += 1
+            t_idx, s_idx = self.max_idx_of(arr_t_s)
+            t_series = arr_t_s[:, s_idx]
+            s_idx = self._restore_idx(s_idx, s_idx_resotre_arr)
+            t_arg = np.argpartition(t_series, -self.higher_95_num)[-self.higher_95_num:]
+            for t_idx in t_arg:
+                need_dispatch = t_series[t_idx]
+                for c_idx in self.qos_avail_for_s[s_idx]:
+                    can_dispatch = min(need_dispatch, self.demand_after_5_dispatch[t_idx, c_idx])
+                    left, assigned = self.assign(t_idx, s_idx, c_idx, can_dispatch)
+                    if assigned:
+                        self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                        ts_assign[t_idx].add(s_idx)
+                        st_assign[s_idx].add(t_idx)
+                        need_dispatch -= assigned
+                    if need_dispatch == 0: break
+            s_idx_deleted.append(s_idx)
+            s_idx_resotre_arr[s_idx] = 1
+            qos_bool_c_s = np.delete(qos_bool_c_s_orig, s_idx_deleted, axis=1)
+            arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
+        print(f'matrix used time: {time.time() - st}')
+        ############# dispatch to prev 95% ###################
+        ############# normal dispatch ##################
+        # self.after_95_record = self.record.copy()
+        # st = time.time()
+        # for (t_idx, c_idx), need_dispatch in self.max_idx_gen(self.demand_after_5_dispatch):
+        #     s_avail_set = self.qos_avail_for_c_set[c_idx]
+        #     s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
+        #     avg = need_dispatch // len(s_avail_set)
+        #     remain = need_dispatch - avg * len(s_avail_set)
+        #     for s_idx in s_avail_set:
+        #         remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
+        #     if remain: 
+        #         for s_idx in s_avail_set:
+        #             remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
+        #     if remain: 
+        #         raise BaseException('not fully dispatched')
+        ############### avg dispatch #####################
+        barrier = np.zeros(s_len, dtype=np.int32)
+        for (t_idx, c_idx), need_dispatch in self.max_idx_gen(self.demand_after_5_dispatch):
+            if need_dispatch == 0: break
+            # dispatch to max
+            before_95_set = self.qos_avail_for_c_set[c_idx] - ts_assign[t_idx]
+            for s_idx in before_95_set:
+                can_dispatch = max(barrier[s_idx] - self.t_s_record[t_idx, s_idx], 0)
+                can_dispatch = min(need_dispatch, can_dispatch)
+                if can_dispatch:
+                    left, assigned = self.assign(t_idx, s_idx, c_idx, can_dispatch)
+                    self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                    need_dispatch -= assigned
+                    if need_dispatch == 0: break
+            if need_dispatch == 0: continue
+            # after dispatch will at 95%
+            max_can_dispatch = np.maximum(bandwidth - self.t_s_record[t_idx], 0)
+            before_95_list = list(before_95_set)
+            dispatch_to_each = self._avg_to_each(max_can_dispatch, need_dispatch, list(before_95_list))
+            for s_idx in before_95_list:
+                left, assigned = self.assign(t_idx, s_idx, c_idx, dispatch_to_each[s_idx])
+                self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                if left: raise BaseException('not dispatch fully')
+                if assigned: barrier[s_idx] = self.t_s_record[t_idx, s_idx]
         print(f'remain used time: {time.time() - st}')
 
+    def dispatch_from_server_5time_2(self):
+        ts_assign = [ set() for _ in range(t_len)]
+        st_assign = [ set() for _ in range(s_len)]
+        self.sum_at_5 = 0
+        s_full_filled = np.zeros(s_len, dtype=np.int32)
+        after_95_t_includ_s = defaultdict(set)
+        self.demand_after_5_dispatch = client_demand.copy()
+        qos_bool_c_s_orig = np.array((qos < qos_lim).T, order='F')
+        qos_bool_c_s = qos_bool_c_s_orig
+        s_idx_resotre_arr = np.zeros(s_len, dtype=np.int32)
+        s_idx_deleted = []
+        arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s_orig  # t * c  dot  c * s  -->  t * s
+        cnt = 0
+        st = time.time()
+        ############ dispatch to 5% ######################
+        s_idx_arg = np.argsort(-bandwidth)
+        for s_idx in s_idx_arg:
+            t_series = arr_t_s[:, s_idx]
+            # s_idx = self._restore_idx(s_idx, s_idx_resotre_arr)
+            t_arg = np.argpartition(t_series, -self.higher_95_num)[-self.higher_95_num:]
+            for t_idx in t_arg:
+                need_dispatch = t_series[t_idx]
+                for c_idx in self.qos_avail_for_s[s_idx]:
+                    can_dispatch = min(need_dispatch, self.demand_after_5_dispatch[t_idx, c_idx])
+                    left, assigned = self.assign(t_idx, s_idx, c_idx, can_dispatch)
+                    if assigned:
+                        self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                        ts_assign[t_idx].add(s_idx)
+                        st_assign[s_idx].add(t_idx)
+                        need_dispatch -= assigned
+                    if need_dispatch == 0: break
+            # s_idx_deleted.append(s_idx)
+            # s_idx_resotre_arr[s_idx] = 1
+            # qos_bool_c_s = np.delete(qos_bool_c_s_orig, s_idx_deleted, axis=1)
+            arr_t_s = self.demand_after_5_dispatch @ qos_bool_c_s  # t * c  dot  c * s  -->  t * s
+        print(f'matrix used time: {time.time() - st}')
+        ############# dispatch to prev 95% ###################
+        ############# normal dispatch ##################
+        # self.after_95_record = self.record.copy()
+        # st = time.time()
+        # for (t_idx, c_idx), need_dispatch in self.max_idx_gen(self.demand_after_5_dispatch):
+        #     s_avail_set = self.qos_avail_for_c_set[c_idx]
+        #     s_avail_set = s_avail_set - after_95_t_includ_s[t_idx]
+        #     avg = need_dispatch // len(s_avail_set)
+        #     remain = need_dispatch - avg * len(s_avail_set)
+        #     for s_idx in s_avail_set:
+        #         remain, assigned = self.assign(t_idx, s_idx, c_idx, remain + avg)
+        #     if remain: 
+        #         for s_idx in s_avail_set:
+        #             remain, assigned = self.assign(t_idx, s_idx, c_idx, remain)
+        #     if remain: 
+        #         raise BaseException('not fully dispatched')
+        ############### avg dispatch #####################
+        barrier = np.zeros(s_len, dtype=np.int32)
+        for (t_idx, c_idx), need_dispatch in self.max_idx_gen(self.demand_after_5_dispatch):
+            if need_dispatch == 0: break
+        # tc_list = list(product(range(t_len), range(c_len)))
+        # shuffle(tc_list)
+        # for t_idx, c_idx in tc_list:
+        #     need_dispatch = self.demand_after_5_dispatch[t_idx, c_idx]
+        #     if need_dispatch == 0: continue
+            # dispatch to max
+            before_95_set = self.qos_avail_for_c_set[c_idx] - ts_assign[t_idx]
+            for s_idx in before_95_set:
+                can_dispatch = max(barrier[s_idx] - self.t_s_record[t_idx, s_idx], 0)
+                can_dispatch = min(need_dispatch, can_dispatch)
+                if can_dispatch:
+                    left, assigned = self.assign(t_idx, s_idx, c_idx, can_dispatch)
+                    self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                    need_dispatch -= assigned
+                    if need_dispatch == 0: break
+            if need_dispatch == 0: continue
+            # after dispatch will at 95%
+            max_can_dispatch = np.maximum(bandwidth - self.t_s_record[t_idx], 0)
+            before_95_list = list(before_95_set)
+            dispatch_to_each = self._avg_to_each(max_can_dispatch, need_dispatch, list(before_95_list))
+            for s_idx in before_95_list:
+                left, assigned = self.assign(t_idx, s_idx, c_idx, dispatch_to_each[s_idx])
+                self.demand_after_5_dispatch[t_idx, c_idx] -= assigned
+                if left: raise BaseException('not dispatch fully')
+                if assigned: barrier[s_idx] = self.t_s_record[t_idx, s_idx]
+        print(f'remain used time: {time.time() - st}')
 
 if __name__ == '__main__':
     get_data()
     start_time = time.time()
     s = Solution()
-    # s.dispatch_from_server_no_avg()
-    # s.dispatch_from_server()
-    # s.dispatch_from_server_5_times_no_avg()
-    # s.dispatch_from_server_5_times()
     # s.dispatch()
-    s.dispatch_from_server_after_95_barrier()
+    # s.dispatch_t_avg()
+    s.dispatch_from_server_5time_2()
     if LOCAL: 
         print(f'used time normal: {(time.time()-start_time):.2f}')
         s.calc_score95(False)
-    print(f'gen time: {s.gen_time}')
-    print(f'assign time: {s.assign_time}')
 
     # s.construct_all_graph()
     # s.iterate_s_cap()
@@ -944,8 +1161,8 @@ if __name__ == '__main__':
         # s.dispatch_again_batch_for_one_server(i)
         s.dispatch_again()
         curr_score = s.calc_score95(print_sep=False)
-        if (prev_score - curr_score) / curr_score < 0.000000001: 
-            break
+        # if (prev_score - curr_score) / curr_score < 0.000000001: 
+        #     break
         prev_score = curr_score
 
     s.output()
