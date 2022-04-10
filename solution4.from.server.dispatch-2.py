@@ -3,7 +3,7 @@ from typing import List, Tuple, Set
 from subprocess import getoutput
 import math
 import time
-from dinic_git import Dinic as Graph
+from dinic import Dinic as Graph
 # from EK import Graph
 from functools import reduce
 from read_data import *
